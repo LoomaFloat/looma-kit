@@ -1,0 +1,32 @@
+# Чат-ассистент на большой модели: страница и потоковый ответ.
+name: {{name}}
+runtime: { kind: python, python: "3.12" }
+processes:
+  # Спит без запросов; разговор живёт в браузере, так что сон его не теряет.
+  web: { cmd: "python app.py", port: 8080, min: 0, max: 1, idle_stop: 10m }
+gpu:
+  # Модель, которую приложение зовёт своим токеном. Другую — поменять здесь
+  # и в ASSISTANT_MODEL (секрет) или в app.py.
+  chat: { model: Qwen3.8-Flash-Next-NVFP4 }
+# Событие для учёта по клиентам маркетплейса: приложение отмечает каждый ответ.
+events:
+  - { name: answer, title: Ответ }
+# Каналы кроме веба: API по ключу клиента и инструмент для агентов (MCP).
+channels:
+  api: {}
+  mcp:
+    tools:
+      - name: ask
+        title: Спросить ассистента
+        description: Задать вопрос ассистенту и получить ответ целиком.
+        path: /api/ask
+        input: { type: object, properties: { question: { type: string } }, required: [question] }
+# Необязательные: ASSISTANT_SYSTEM — характер ассистента, ASSISTANT_MODEL.
+secrets: [ASSISTANT_SYSTEM, ASSISTANT_MODEL]
+# Карточка в маркетплейсе — `looma publish` (берётся из релиза на prod).
+listing:
+  title: Ассистент
+  summary: Чат с большой моделью — ответ печатается по мере генерации
+  category: assistants
+  tags: [чат, ассистент]
+  # icon: icon.png       # PNG, JPEG или WebP до 256 КБ

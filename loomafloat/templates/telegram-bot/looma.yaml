@@ -1,0 +1,26 @@
+# Telegram-бот с генерацией картинок и видео.
+name: {{name}}
+runtime: { kind: python, python: "3.12" }
+processes:
+  # Всегда на связи: ролик считается минуты, и процесс должен дожить до
+  # отправки. Чтобы экономить, можно min: 0 и idle_stop: 1h.
+  web: { cmd: "python bot.py", port: 8080, min: 1 }
+gpu:
+  draw: { model: Qwen-Image-2.1 }
+  video: { model: MiniMax-H3 }
+# Токен от @BotFather: looma secrets set TELEGRAM_BOT_TOKEN=123:ABC…
+secrets: [TELEGRAM_BOT_TOKEN]
+# Обновления бота — через платформу: она называет отправителя (X-Looma-Client).
+# bot — для карточки в маркетплейсе (ссылка t.me), впишите своего.
+channels:
+  telegram: { webhook: /telegram }
+# События для учёта по клиентам: готовая картинка и готовый ролик.
+events:
+  - { name: picture, title: Картинка }
+  - { name: video, title: Ролик }
+# Карточка в маркетплейсе — `looma publish` (берётся из релиза на prod).
+listing:
+  title: Бот-художник
+  summary: Telegram-бот рисует по описанию, правит фото по подписи и снимает ролики
+  category: images
+  tags: [telegram, картинки, видео]

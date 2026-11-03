@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "looma": {
+      "command": "looma",
+      "args": ["mcp"]
+    }
+  }
+}

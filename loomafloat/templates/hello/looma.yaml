@@ -1,0 +1,18 @@
+# Приложение на Looma: что запускать и что ему нужно.
+# Справка по полям — client/docs/API.md, раздел looma-apps.
+name: {{name}}
+runtime: { kind: python, python: "3.12" }
+processes:
+  # Веб: слушает 0.0.0.0:$PORT. min: 0 — спит без запросов и просыпается
+  # первым запросом; max: 1 — один экземпляр.
+  web: { cmd: "python app.py", port: 8080, min: 0, max: 1 }
+# Модели, которые приложение вызывает своим токеном (LOOMA_APP_TOKEN):
+# gpu:
+#   chat: { model: Qwen3.8-Flash-Next-NVFP4 }
+# Карточка в маркетплейсе — `looma publish` (берётся из релиза на prod):
+# listing:
+#   title: Моё приложение
+#   summary: Одной строкой — что оно делает
+#   category: other      # assistants, images, video, text, code, data, business, education, fun
+#   tags: [пример]
+#   icon: icon.png       # PNG, JPEG или WebP до 256 КБ

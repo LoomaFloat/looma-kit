@@ -1,0 +1,35 @@
+[project]
+name = "loomafloat"
+version = "0.2.0"
+description = "Looma для авторов приложений и ИИ-агентов: CLI `looma`, SDK вызовов моделей, MCP-сервер и skills переноса проектов"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+# Ни одной зависимости: ставится автору, у которого есть только Python, и не
+# спорит с его зависимостями.
+dependencies = []
+
+[project.urls]
+Homepage = "https://loomafloat.ru"
+Repository = "https://github.com/LoomaFloat/looma-kit"
+
+[project.scripts]
+looma = "loomafloat.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["loomafloat"]
+
+# Skills лежат в корне репозитория (их там читают плагин Claude Code и агенты,
+# которым папку копируют руками), а `looma skill install` берёт их из пакета.
+[tool.hatch.build.targets.wheel.force-include]
+"skills" = "loomafloat/skills"
+
+[tool.hatch.build.targets.sdist]
+exclude = ["/.github", "/tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

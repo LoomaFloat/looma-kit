@@ -1,0 +1,14 @@
+{
+  "name": "looma-kit",
+  "owner": { "name": "Looma Float", "url": "https://loomafloat.ru" },
+  "description": "Looma для ИИ-агентов: перенос проектов на площадку Looma, деплой и работа с приложениями.",
+  "plugins": [
+    {
+      "name": "looma",
+      "source": "./",
+      "description": "Skills looma-port и looma-apps и MCP-сервер looma (нужен CLI looma).",
+      "category": "deployment",
+      "tags": ["looma", "deploy", "mcp"]
+    }
+  ]
+}

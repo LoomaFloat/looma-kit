@@ -1,0 +1,22 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv run --python ${{ matrix.python }} --with pytest python -m pytest -q tests
+      - name: skills без лишних полей и с коротким описанием
+        run: uv run --python ${{ matrix.python }} python tests/check_skills.py skills
+      - name: пакет собирается и несёт skills
+        run: |
+          uv build --wheel --out-dir dist
+          python -c "import zipfile,glob,sys; names=zipfile.ZipFile(glob.glob('dist/*.whl')[0]).namelist(); sys.exit(0 if 'loomafloat/skills/looma-port/SKILL.md' in names else 1)"
