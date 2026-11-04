@@ -366,10 +366,12 @@ RULES: List[Rule] = [
          py=("openai-whisper", "whisper", "faster-whisper", "faster_whisper", "whisperx", "tts",
              "coqui-tts", "bark", "nemo-toolkit", "vosk", "silero", "pyannote-audio",
              "pyannote")),
-    Rule("external-llm-api", "note", "Внешний API моделей (OpenAI, Anthropic, Google и др.)",
-         "Работает и на площадке: HTTPS наружу открыт, ключ — секретом (`looma secrets set`). "
-         "Либо перевести на модели Looma Float: OpenAI-совместимый адрес `$LOOMA_API_URL` и "
-         "токен `$LOOMA_APP_TOKEN` — тогда вызовы учитываются на клиента маркетплейса.",
+    Rule("external-llm-api", "change", "Внешний API моделей (OpenAI, Anthropic, Google и др.)",
+         "Перевести на модели сети Looma Float: ради них сервис и переносят. Чат, изображения, "
+         "видео, эмбеддинги и ре-ранк есть в каталоге (`looma models`); адрес OpenAI-совместимый "
+         "(`$LOOMA_API_URL`, токен `$LOOMA_APP_TOKEN`) или SDK `loomafloat`. Вызовы идут на "
+         "клиента каталога, себестоимость видна автору, сторонний ключ не нужен. Внешний API "
+         "оставить, только если в каталоге нет модели нужного типа или так решил пользователь.",
          "references/models.md",
          py=("openai", "anthropic", "google-generativeai", "google-genai", "mistralai", "cohere",
              "groq", "together", "replicate", "langchain-openai", "langchain-anthropic",
@@ -513,13 +515,18 @@ RULES: List[Rule] = [
          node=("next", "nuxt", "@angular/core", "@sveltejs/kit", "gatsby", "@remix-run/node",
                "astro", "vite", "webpack", "@nestjs/core"),
          dev=True),
-    Rule("own-auth", "note", "Свои учётные записи пользователей",
-         "Работают как есть. Для маркетплейса можно добавить `access: clients`: шлюз пускает "
-         "только вошедших на витрине и называет клиента заголовком `X-Looma-Client`.",
-         "references/manifest.md",
-         py=("flask-login", "django-allauth", "fastapi-users", "authlib", "python-jose", "pyjwt"),
+    Rule("own-auth", "change", "Свои регистрация и вход пользователей",
+         "Сервису в каталоге свой вход не нужен: с `access: clients` витрина сама пускает "
+         "вошедшего клиента и передаёт его псевдоним в заголовке `X-Looma-Client`. Данные "
+         "пользователя привязать к нему, а регистрацию, пароли и токены входа убрать. Это "
+         "решение о продукте: предложить в плане и спросить пользователя. Свой вход оставить, "
+         "если сервис не для каталога (`access: public`).",
+         "references/platform.md",
+         py=("flask-login", "django-allauth", "fastapi-users", "authlib", "python-jose", "pyjwt",
+             "passlib", "bcrypt", "argon2-cffi", "flask-jwt-extended",
+             "djangorestframework-simplejwt"),
          node=("passport", "next-auth", "@auth/core", "lucia", "jsonwebtoken", "express-session",
-               "@clerk/nextjs", "@supabase/supabase-js")),
+               "@clerk/nextjs", "@supabase/supabase-js", "bcrypt", "bcryptjs", "argon2")),
 ]
 
 

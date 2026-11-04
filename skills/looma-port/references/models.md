@@ -93,7 +93,7 @@ mp4 = looma.video("MiniMax-H3", "A red fox in a snowy forest", wait=True).conten
 | `sentence-transformers`, `FlagEmbedding`, `fastembed` | `POST /v1/embeddings` моделью типа `embedding`; длину вектора показывает `looma models` (`dimensions`) |
 | cross-encoder для ре-ранка | `POST /v1/rerank` моделью типа `rerank` |
 | Whisper, TTS, распознавание изображений своими моделями | модель нужного типа, если она есть в `looma models`; иначе внешний API по HTTPS с ключом в секрете; без того и другого эту часть не перенести |
-| OpenAI, Anthropic и другие внешние API | можно оставить: HTTPS наружу открыт, ключ задаётся через `looma secrets set`; или перевести на модели сети |
+| OpenAI, Anthropic и другие внешние API (чат, эмбеддинги, ре-ранк, изображения) | модели сети того же типа из `looma models`: вызовы идут на клиента каталога, себестоимость видна в кабинете, сторонний ключ не нужен. Внешний API оставьте, только если нужного типа в каталоге нет: HTTPS наружу открыт, ключ задаётся через `looma secrets set` |
 | Веса моделей в репозитории | уберите из релиза через `.loomaignore` |
 
 После замены уберите из зависимостей `torch`, `tensorflow`, `transformers`,

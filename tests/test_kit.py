@@ -45,7 +45,7 @@ def test_flask_with_sqlite_openai_and_uploads_needs_changes(tmp_path):
     assert report["verdict"]["code"] == "changes"
     ids = report["ids"]
     assert ids["sqlite"] == "change" and ids["local-files"] == "change"
-    assert ids["listen"] == "change" and ids["external-llm-api"] == "note"
+    assert ids["listen"] == "change" and ids["external-llm-api"] == "change"
     assert "redis" not in ids
     assert report["secrets"] == ["OPENAI_API_KEY", "SECRET_KEY"]   # DATABASE_URL — платформы
     draft = report["manifest_draft"]

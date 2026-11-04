@@ -4,7 +4,7 @@ description: Сервисы на площадке Looma Float. Деплой, sta
 license: MIT
 compatibility: Нужны CLI looma (github.com/LoomaFloat/looma-kit) и вход `looma login`; MCP-сервер `looma mcp` по желанию.
 metadata:
-  version: "0.3.0"
+  version: "0.3.1"
   homepage: "https://github.com/LoomaFloat/looma-kit"
 ---
 
@@ -15,6 +15,11 @@ Looma Float запускает сервисы авторов и даёт им м
 окружения: **staging** (каждый новый релиз встаёт сюда сам) и **prod** (только
 переводом). Адреса: `https://<имя>-staging.apps.loomafloat.ru` и
 `https://<имя>.apps.loomafloat.ru`.
+
+Когда сервис дописывают или меняют, держать в голове, зачем он на площадке: модели
+вызывать из каталога сети (`looma models`, `gpu:` в манифесте, SDK `loomafloat`), а не
+внешние API; сервису в каталоге не нужна своя регистрация, клиента передаёт витрина
+(`access: clients`, заголовок `X-Looma-Client`); платные действия отмечать `charge`.
 
 Работать через MCP-инструменты `looma_*`, если сервер подключён, иначе через CLI
 `looma` в терминале (`looma status`, `looma deploy`, …). Действия у них одни и те же.
