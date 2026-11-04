@@ -1,4 +1,4 @@
-"""Действия над приложениями, общие для CLI и MCP: результат — данными, а
+"""Действия над сервисами, общие для CLI и MCP: результат — данными, а
 не печатью, чтобы одно и то же показывать человеку и отдавать агенту."""
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from loomafloat.http import LoomaError
 from loomafloat.pack import MANIFEST, PackError, ignored, manifest_name, pack, patterns
 
 TEMPLATES = Path(__file__).with_name("templates")
-#: Шаблону нужен SDK — копия ложится в проект: приложение собирается на
+#: Шаблону нужен SDK — копия ложится в проект: сервис собирается на
 #: платформе без PyPI и без доступа к репозиторию.
 VENDOR_MARKER = ".vendor-loomafloat"
 VENDORED = ("__init__.py", "client.py", "config.py", "http.py")
@@ -44,6 +44,8 @@ def init(target: Path, template: str = "hello", name: Optional[str] = None) -> d
     target.mkdir(parents=True, exist_ok=True)
     written = []
     for path in sorted(source.rglob("*")):
+        if "__pycache__" in path.relative_to(source).parts:
+            continue  # кэш Python остаётся от проверки шаблона, в проект он не нужен
         destination = target / path.relative_to(source)
         if path.is_dir():
             destination.mkdir(parents=True, exist_ok=True)
@@ -106,7 +108,7 @@ def missing_sdk(root: Path) -> bool:
 
 
 # ---------------------------------------------------------------- skills
-#: Skills для агентов: перенос проекта на площадку и работа с приложением.
+#: Skills для агентов: перенос проекта на площадку и работа с сервисом.
 SKILLS = ("looma-port", "looma-apps")
 
 #: Куда агенты читают skills: (у пользователя, в проекте). Пути — из
@@ -247,7 +249,7 @@ def rubles(kopecks) -> str:
 
 
 def stats_lines(doc: dict) -> list:
-    """Статистика приложения — строками для человека."""
+    """Статистика сервиса — строками для человека."""
     t = doc["totals"]
     channels = ", ".join(f"{CHANNEL_NAMES.get(k, k)} {v}" for k, v in doc["channels"].items() if v)
     lines = [f"{doc['app']} — за {doc['days']} дн.",
@@ -263,7 +265,7 @@ def stats_lines(doc: dict) -> list:
         if m["tokens_in"] or m["tokens_out"]:
             parts.append(f"токены {m['tokens_in']}/{m['tokens_out']}")
         if m["images"]:
-            parts.append(f"картинки {m['images']}")
+            parts.append(f"изображения {m['images']}")
         if m["video_seconds"]:
             parts.append(f"видео {m['video_seconds']} с")
         lines.append(f"  {m['model']}: {', '.join(parts)}, {rubles(m['cost'])}")
@@ -305,7 +307,7 @@ def deploy(looma: Looma, root: Path, *, app: Optional[str] = None, promote: bool
     root = Path(root).resolve()
     name = app or manifest_name(root)
     if not name:
-        raise OpError(f"какое приложение? Нет имени в {root / MANIFEST} и не указано app")
+        raise OpError(f"какой сервис? Нет имени в {root / MANIFEST} и не указано app")
     vendored = missing_sdk(root)
     if vendored:
         vendor(root)
@@ -327,7 +329,7 @@ def deploy(looma: Looma, root: Path, *, app: Optional[str] = None, promote: bool
     if looma.apps.find(name) is None:
         looma.apps.create(name)
         created = True
-        say(f"заведено приложение {name}")
+        say(f"заведён сервис {name}")
     release = looma.apps.release(name, archive)
     number = release["number"]
     result = {"app": name, "release": number, "created": created, "files": len(files),
@@ -354,14 +356,14 @@ def deploy(looma: Looma, root: Path, *, app: Optional[str] = None, promote: bool
 
 
 def check(url: str, *, path: str = "/", timeout: float = 150.0) -> dict:
-    """Запрос к адресу приложения — проверка после записи. Спящий веб
+    """Запрос к адресу сервиса — проверка после записи. Спящий веб
     просыпается первым запросом, поэтому ждём щедро."""
     return _probe(url.rstrip("/") + "/" + path.lstrip("/"), timeout=timeout)
 
 
 def check_app(looma: Looma, app: str, environment: str = "staging", path: str = "/",
               timeout: float = 150.0) -> dict:
-    """Запрос к вебу приложения через API владельца: доходит до процесса и при
+    """Запрос к вебу сервиса через API владельца: доходит до процесса и при
     `access: clients`, где гость получил бы страницу входа. Будит спящий веб.
     Шлюз, сертификат и вход витрины так не проверить — для них `check` по
     публичному адресу."""
@@ -393,7 +395,7 @@ def _probe(target: str, *, timeout: float, headers: Optional[dict] = None) -> di
 def app_url(looma: Looma, app: str, environment: str) -> str:
     url = (looma.apps.get(app).get("urls") or {}).get(environment) or ""
     if not url:
-        raise OpError("адреса нет: у платформы не настроен домен приложений")
+        raise OpError("адреса нет: у платформы не настроен домен сервисов")
     return url
 
 

@@ -1,65 +1,73 @@
 # Python: рецепты переноса
 
-`runtime: { kind: python, python: "3.12" }`. Платформа ставит зависимости из
-`requirements.txt` (или `pip install .` по `pyproject.toml`) и кладёт код в `/app`.
-Poetry, Pipenv, uv: выгрузить зависимости в `requirements.txt`
-(`uv export --no-hashes -o requirements.txt`, `poetry export -f requirements.txt`) или
-собрать своим Dockerfile ([recipes-docker.md](recipes-docker.md)).
+Укажите в `looma.yaml` `runtime: { kind: python, python: "3.12" }`. Площадка ставит
+зависимости из `requirements.txt` (или `pip install .` по `pyproject.toml`) и кладёт код
+в `/app`. Если вы используете Poetry, Pipenv или uv, выгрузите зависимости в
+`requirements.txt` (`uv export --no-hashes -o requirements.txt`,
+`poetry export -f requirements.txt`) или соберите образ своим Dockerfile
+([Dockerfile и docker-compose](recipes-docker.md)).
 
 ## Запуск веба
 
-Слушать `0.0.0.0` на `$PORT`. Команда — в `processes.web.cmd` (выполняется через
-shell, `$PORT` раскрывается). Сервер разработки (`app.run()`, `runserver`) заменить на
-боевой.
+Веб-процесс должен слушать `0.0.0.0` на порту `$PORT`. Команду запуска укажите в
+`processes.web.cmd`: она выполняется через shell, поэтому `$PORT` раскрывается. Сервер
+разработки (`app.run()`, `runserver`) замените на боевой.
 
 | Фреймворк | `cmd` | Зависимость |
 |---|---|---|
 | Flask | `gunicorn app:app -b 0.0.0.0:$PORT --workers 2 --timeout 300` | `gunicorn` |
 | FastAPI, Starlette | `uvicorn main:app --host 0.0.0.0 --port $PORT` | `uvicorn` |
 | Django | `python manage.py migrate --noinput && gunicorn proj.wsgi -b 0.0.0.0:$PORT` | `gunicorn` |
-| aiohttp | `python -m aiohttp.web -H 0.0.0.0 -P $PORT app:init` или `web.run_app(app, host="0.0.0.0", port=int(os.environ["PORT"]))` | — |
-| свой `if __name__ == "__main__"` | `python app.py` и в коде `port=int(os.environ.get("PORT", 8080))`, `host="0.0.0.0"` | — |
+| aiohttp | `python -m aiohttp.web -H 0.0.0.0 -P $PORT app:init` или `web.run_app(app, host="0.0.0.0", port=int(os.environ["PORT"]))` | не нужна |
+| свой `if __name__ == "__main__"` | `python app.py` и в коде `port=int(os.environ.get("PORT", 8080))`, `host="0.0.0.0"` | не нужна |
 
-Долгие ответы моделей: таймаут воркера gunicorn (`--timeout`) — больше времени ответа
-модели; для стрима — `uvicorn` или `gunicorn -k uvicorn.workers.UvicornWorker`.
+Модели могут отвечать долго. Таймаут воркера gunicorn (`--timeout`) должен быть больше
+времени ответа модели. Для потоковых ответов используйте `uvicorn` или
+`gunicorn -k uvicorn.workers.UvicornWorker`.
 
 ## Django
 
-- `ALLOWED_HOSTS`: добавить хост из `LOOMA_APP_URL` (или `.apps.loomafloat.ru`);
-  `CSRF_TRUSTED_ORIGINS = [os.environ["LOOMA_APP_URL"]]`, если есть формы.
-- База — `dj-database-url` из `DATABASE_URL` ([data.md](data.md)).
-- Статика: `whitenoise` (`STATIC_ROOT`, `collectstatic` в `cmd` перед запуском или при
-  сборке), медиа — `django-storages` в бакет.
-- `SECRET_KEY`, `DEBUG=False` — секретами и переменными.
-- HTTPS делает шлюз: `SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")`.
+- В `ALLOWED_HOSTS` добавьте хост из `LOOMA_APP_URL` (или `.apps.loomafloat.ru`).
+- Если в сервисе есть формы, задайте `CSRF_TRUSTED_ORIGINS = [os.environ["LOOMA_APP_URL"]]`.
+- Базу подключите через `dj-database-url` из `DATABASE_URL` ([Данные](data.md#sqlite)).
+- Статику отдавайте через `whitenoise`: задайте `STATIC_ROOT` и выполните `collectstatic`
+  в `cmd` перед запуском или при сборке.
+- Медиа храните в бакете через `django-storages` ([Данные](data.md#files)).
+- `SECRET_KEY` и `DEBUG` читайте из переменных окружения. `SECRET_KEY` задайте секретом,
+  `DEBUG` по умолчанию держите `False`.
+- HTTPS обеспечивает шлюз, поэтому задайте
+  `SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")`.
 
 ## Фоновые задачи
 
-- Celery/RQ с Redis → очередь в Postgres (`procrastinate`) и процесс `worker`
-  ([data.md](data.md#redis)). Если задачи короткие и редкие — выполнять в потоке
-  веб-процесса и хранить состояние в базе.
-- `APScheduler`, `schedule` в процессе веба → процесс по расписанию:
-  `nightly: { schedule: "0 3 * * *", cmd: "python -m app.nightly" }` (UTC). Веб с
-  `min: 0` засыпает — внутрипроцессный планировщик в нём не сработает.
+- Celery или RQ с Redis замените очередью в Postgres (`procrastinate`) и процессом
+  `worker` ([Данные](data.md#redis)). Если задачи короткие и редкие, выполняйте их в
+  потоке веб-процесса, а состояние храните в базе.
+- `APScheduler` или `schedule` внутри веба замените процессом по расписанию:
+  `nightly: { schedule: "0 3 * * *", cmd: "python -m app.nightly" }` (время в UTC). Веб
+  с `min: 0` засыпает, и планировщик внутри него не сработает.
 
 ## Модели
 
-OpenAI SDK → адрес `$LOOMA_API_URL/v1` и ключ `$LOOMA_APP_TOKEN`; либо SDK
-`loomafloat` ([models.md](models.md)). `requests`, `httpx`, `urllib`, `boto3` берут
-прокси из окружения сами. `aiohttp` — нет: `aiohttp.ClientSession(trust_env=True)`.
+В OpenAI SDK укажите адрес `$LOOMA_API_URL` (он уже оканчивается на `/v1`) и ключ `$LOOMA_APP_TOKEN` или
+используйте SDK `loomafloat` ([Модели](models.md)). `requests`, `httpx`, `urllib` и
+`boto3` берут прокси из окружения сами. `aiohttp` этого не делает: создавайте сессию
+как `aiohttp.ClientSession(trust_env=True)`.
 
 ## Gradio, Streamlit, Chainlit
 
-Streamlit держится на WebSocket — шлюз его не пропускает: интерфейс переписать на
-обычный веб (FastAPI или Flask и простая страница; стрим текста — SSE). Gradio —
-проверить на staging (`looma check`, затем открыть в браузере): если интерфейс не
-отвечает — тот же путь. Chainlit — на WebSocket, как Streamlit.
+Streamlit работает через WebSocket, а шлюз WebSocket не пропускает. Интерфейс придётся
+переписать на обычный веб: FastAPI или Flask и простая страница, поток текста через SSE.
+Chainlit тоже работает через WebSocket, путь для него тот же.
+
+Gradio проверьте на staging: выполните `looma check`, затем откройте адрес staging и
+пройдите интерфейс. Если интерфейс не отвечает, перепишите его так же, как Streamlit.
 
 ## Типичный набор правок
 
-1. `requirements.txt`: добавить `gunicorn` или `uvicorn`, драйвер Postgres, `boto3`;
-   убрать `torch`, `transformers` и прочее, если модели переехали в каталог.
-2. Порт и адрес — из `PORT`.
-3. База — `DATABASE_URL`; файлы — бакет.
-4. Модели — каталог Looma.
-5. `looma.yaml`, `.loomaignore`.
+1. В `requirements.txt` добавьте `gunicorn` или `uvicorn`, драйвер Postgres и `boto3`.
+   Уберите `torch`, `transformers` и прочее, если модели переехали в сеть Looma Float.
+2. Слушайте `0.0.0.0` на порту из `PORT`.
+3. Базу подключите по `DATABASE_URL`, файлы храните в бакете.
+4. Модели вызывайте по API сети Looma Float.
+5. Добавьте `looma.yaml` и `.loomaignore`.

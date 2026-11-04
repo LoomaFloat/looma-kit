@@ -1,4 +1,4 @@
-"""Самое простое приложение на Looma: страница, которая знает, где живёт и
+"""Самый простой сервис на Looma Float: страница, которая знает, где живёт и
 кто зашёл (клиента маркетплейса платформа называет в X-Looma-Client)."""
 
 import json
@@ -13,7 +13,7 @@ class Handler(BaseHTTPRequestHandler):
             "environment": os.environ.get("LOOMA_ENVIRONMENT", "local"),
             "release": os.environ.get("LOOMA_RELEASE", "—"),
             "path": self.path,
-            # Псевдоним клиента у этого приложения: без почты и имени.
+            # Псевдоним клиента у этого сервиса: без почты и имени.
             "client": self.headers.get("X-Looma-Client"),
         }
         if self.path.startswith("/health"):
@@ -23,7 +23,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             who = (f"вы — клиент маркетплейса {about['client']}" if about["client"]
                    else "вы зашли без входа в маркетплейс")
-            body = (f"<h1>Привет от {about['app']}!</h1>"
+            body = (f"<h1>Сервис {about['app']} работает</h1>"
                     f"<p>окружение {about['environment']}, релиз {about['release']}</p>"
                     f"<p>{who}</p>").encode()
             kind = "text/html; charset=utf-8"

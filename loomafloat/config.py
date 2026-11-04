@@ -1,11 +1,11 @@
 """Где CLI помнит адрес API и ключ: `~/.config/looma/config.json`.
 
 Файл — только владельцу (0600): в нём ключ API. Переменные окружения сильнее
-файла — так ключ приходит в CI и в процессы приложения:
+файла — так ключ приходит в CI и в процессы сервиса:
 
     LOOMA_API_KEY     ключ проекта (`looma_sk_…`)
-    LOOMA_APP_TOKEN   токен приложения внутри его процесса (`looma_app_…`)
-    LOOMA_API_URL     адрес API; внутри приложения — с `/v1` на конце
+    LOOMA_APP_TOKEN   токен сервиса внутри его процесса (`looma_app_…`)
+    LOOMA_API_URL     адрес API; внутри сервиса — с `/v1` на конце
     LOOMA_CONFIG      другой файл настроек
 """
 
@@ -17,8 +17,8 @@ from pathlib import Path
 from typing import Optional
 
 DEFAULT_API = "https://api.loomafloat.ru"
-#: Где выпускают ключ — туда отправляет `looma login`.
-KEYS_PAGE = "https://console.loomafloat.ru/intelligence/keys"
+#: Где выпускают ключ проекта для CI: кабинет автора, раздел «Подключение».
+KEYS_PAGE = "https://console.loomafloat.ru/connect"
 
 
 def path() -> Path:
@@ -57,7 +57,7 @@ def forget() -> bool:
 
 
 def base_url(url: str) -> str:
-    """Адрес API без `/v1`: внутри приложения LOOMA_API_URL — с ним."""
+    """Адрес API без `/v1`: внутри сервиса LOOMA_API_URL — с ним."""
     url = (url or DEFAULT_API).strip().rstrip("/")
     return url[:-3] if url.endswith("/v1") else url
 
@@ -68,8 +68,8 @@ def api_url(explicit: Optional[str] = None) -> str:
 
 
 def user_key() -> str:
-    """Ключ человека — для CLI и MCP. Токен приложения (`LOOMA_APP_TOKEN`) — для
-    кода приложения: после `eval "$(looma dev env)"` CLI остаётся со своим ключом."""
+    """Ключ человека — для CLI и MCP. Токен сервиса (`LOOMA_APP_TOKEN`) — для
+    кода сервиса: после `eval "$(looma dev env)"` CLI остаётся со своим ключом."""
     return (os.environ.get("LOOMA_API_KEY", "") or load().get("key", "")).strip()
 
 

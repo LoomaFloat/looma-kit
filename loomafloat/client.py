@@ -1,16 +1,18 @@
-"""Клиент API Looma: модели для кода приложения, приложения для CLI и MCP.
+"""Клиент API Looma Float: модели для кода сервиса, сервисы для CLI и MCP.
 
     from loomafloat import Looma
 
     looma = Looma()        # ключ и адрес — из окружения или `looma login`
     text = looma.chat("Qwen3.8-Flash-Next-NVFP4", "Привет!")
     png = looma.image("Qwen-Image-2.1", "рыжий кот в скафандре")[0]
+    vectors = looma.embed("bge-m3", ["первый кусок", "второй кусок"], input_type="document")
+    best = looma.rerank("bge-reranker-v2-m3", "вопрос", ["кусок 1", "кусок 2"], top_n=1)
     mp4 = looma.video("MiniMax-H3", "A red fox in a snowy forest", quality="fast").content()
 
-Внутри процесса приложения ключ — `LOOMA_APP_TOKEN`, адрес — `LOOMA_API_URL`:
+Внутри процесса сервиса ключ — `LOOMA_APP_TOKEN`, адрес — `LOOMA_API_URL`:
 платформа кладёт их сама, `Looma()` находит их без настроек.
 
-Клиент маркетплейса — заголовок `X-Looma-Client` запроса к приложению
+Клиент маркетплейса — заголовок `X-Looma-Client` запроса к сервису
 (`client_of(headers)`). Вызовы для него — `looma.for_client(ref).chat(…)`:
 они записываются на клиента; событие для учёта — `looma.charge("answer", ref)`.
 """
@@ -21,6 +23,7 @@ import base64
 import json
 import mimetypes
 import os
+import struct
 import time
 import urllib.parse
 from pathlib import Path
@@ -30,12 +33,12 @@ from loomafloat import config
 from loomafloat.http import LoomaError, get_json, open_stream, request, send_json
 
 ImageInput = Union[str, Path, bytes]
-#: Сколько ждать картинку или чат: спящую модель будит первый запрос — минуты.
+#: Сколько ждать изображение или чат: спящую модель будит первый запрос — минуты.
 CALL_TIMEOUT_S = 900.0
 
 
 def _data_url(item: ImageInput) -> str:
-    """Картинка для правки: ссылка http(s) как есть, файл или байты — data-URL."""
+    """Изображение для правки: ссылка http(s) как есть, файл или байты — data-URL."""
     if isinstance(item, str) and item.startswith(("http://", "https://", "data:")):
         return item
     if isinstance(item, (str, Path)):
@@ -98,7 +101,7 @@ class Video:
 
 
 def client_of(headers) -> Optional[str]:
-    """Клиент маркетплейса из заголовков запроса к приложению (`X-Looma-Client`,
+    """Клиент маркетплейса из заголовков запроса к сервису (`X-Looma-Client`,
     его ставит шлюз платформы); None — пришёл не клиент маркетплейса."""
     if headers is None:
         return None
@@ -130,7 +133,7 @@ class Looma:
 
     def charge(self, event: str, client: Optional[str] = None, *, quantity: float = 1,
                id: Optional[str] = None) -> dict:
-        """Отметить событие приложения (из раздела events looma.yaml) для
+        """Отметить событие сервиса (из раздела events looma.yaml) для
         клиента маркетплейса. `id` — чтобы повтор не записался дважды."""
         client = client or self.client
         if not client:
@@ -204,7 +207,7 @@ class Looma:
 
     def image(self, model: str, prompt: str, *, images: Optional[Iterable[ImageInput]] = None,
               n: int = 1, size: Optional[str] = None, **params) -> List[bytes]:
-        """Картинки PNG байтами. С `images` (файлы, байты, ссылки) — правка по
+        """Изображения PNG байтами. С `images` (файлы, байты, ссылки) — правка по
         ним. Поля движка (`seed`, `num_inference_steps`, …) — как есть."""
         body = {"model": model, "prompt": prompt, "n": n, "response_format": "b64_json",
                 **params}
@@ -217,6 +220,40 @@ class Looma:
         answer = send_json("POST", self.url(path), body, key=self.key, timeout=CALL_TIMEOUT_S,
                            headers=self._headers())
         return [base64.b64decode(item["b64_json"]) for item in answer["data"]]
+
+    def embed(self, model: str, texts: Union[str, Iterable[str]], *,
+              input_type: Optional[str] = None,
+              dimensions: Optional[int] = None) -> List[List[float]]:
+        """Векторы текстов по порядку; строка даёт список из одного вектора.
+        `input_type`: `query` для поиска, `document` для индексации. Моделям e5 и
+        Qwen3 нужны свои префиксы, их подставляет сервер. `dimensions` укорачивает
+        вектор у моделей с Matryoshka (вектор перенормирован)."""
+        body = {"model": model, "input": [texts] if isinstance(texts, str) else list(texts),
+                # base64 вдвое легче чисел текстом; читаем так же, как SDK OpenAI.
+                "encoding_format": "base64"}
+        if input_type:
+            body["input_type"] = input_type
+        if dimensions:
+            body["dimensions"] = dimensions
+        answer = send_json("POST", self.url("/v1/embeddings"), body, key=self.key,
+                           timeout=CALL_TIMEOUT_S, headers=self._headers())
+        out = []
+        for item in sorted(answer["data"], key=lambda d: d["index"]):
+            raw = base64.b64decode(item["embedding"])
+            out.append(list(struct.unpack(f"<{len(raw) // 4}f", raw)))
+        return out
+
+    def rerank(self, model: str, query: str, documents: Iterable[str], *,
+               top_n: Optional[int] = None) -> List[dict]:
+        """Документы по убыванию оценки: `{"index", "relevance_score"}`, где
+        `index` указывает в `documents`. `top_n`: сколько лучших вернуть."""
+        body = {"model": model, "query": query, "documents": list(documents),
+                "return_documents": False}
+        if top_n:
+            body["top_n"] = top_n
+        answer = send_json("POST", self.url("/v1/rerank"), body, key=self.key,
+                           timeout=CALL_TIMEOUT_S, headers=self._headers())
+        return answer["results"]
 
     def video(self, model: str, prompt: str, *, seconds: float = 5, wait: bool = False,
               **params) -> Video:
@@ -233,7 +270,7 @@ class Looma:
 
 
 class Apps:
-    """Приложения автора — то, на чём стоят CLI `looma` и MCP."""
+    """Сервисы автора — то, на чём стоят CLI `looma` и MCP."""
 
     def __init__(self, looma: Looma) -> None:
         self.looma = looma

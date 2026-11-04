@@ -96,7 +96,7 @@ def test_init_deploy_promote_rollback(api, capsys, tmp_path, monkeypatch):
     monkeypatch.chdir(root)
     code, out, err = run(capsys, "deploy")
     assert code == 0, err
-    assert "заведено приложение bot" in out and "стоит на staging" in out
+    assert "заведён сервис bot" in out and "стоит на staging" in out
     assert "https://bot-staging.apps.example.ru/" in out
     names = fake_api.archive_names(state.archives[("bot", 1)])
     assert names == [".loomaignore", "README.md", "app.py", "looma.yaml"]
@@ -228,6 +228,15 @@ def test_sdk_calls_models_and_downloads_without_the_key(api):
     assert looma.base == base
     assert looma.chat("chat-model", "привет") == "эхо: привет"
     assert looma.image("img", "кот", n=2) == [fake_api.PNG, fake_api.PNG]
+    # Векторы идут по порядку строк, даже если сервер прислал их в другом.
+    assert looma.embed("emb", ["ab", "abcd"], input_type="document") == [[2.0, 0.5],
+                                                                         [4.0, 0.5]]
+    assert looma.embed("emb", "abc") == [[3.0, 0.5]]
+    sent = state.embeds[0]
+    assert sent["encoding_format"] == "base64" and sent["input_type"] == "document"
+    assert looma.rerank("rr", "вопрос", ["a", "ccc", "bb"], top_n=2) == [
+        {"index": 1, "relevance_score": 1.0}, {"index": 2, "relevance_score": 0.5}]
+    assert state.reranks[0]["return_documents"] is False
     assert looma.image("img", "шляпа", images=[b"\x89PNG..."]) == [fake_api.PNG]
     edit = json.loads([c for c in state.calls if c[1] == "/v1/images/edits"][-1][3])
     assert edit["images"][0].startswith("data:image/png;base64,")
@@ -298,7 +307,7 @@ def test_publish_listing_and_unpublish(api, capsys, tmp_path, monkeypatch):
     run(capsys, "promote")
     code, out, err = run(capsys, "publish")
     assert code == 0, err
-    assert "версия 1 на модерации" in out and "looma listing" in out
+    assert "отправлены на модерацию, версия 1" in out and "looma listing" in out
     listing = state.apps[state.app("bot")["id"]]["listing"]
     listing["versions"][0].update(status="rejected", reason="иконка не видна")
     listing["pending"] = None
@@ -325,6 +334,6 @@ def test_stats_reads_like_a_report(api, capsys, tmp_path, monkeypatch):
     assert "запросы: 6 (веб 3, API 1, MCP 1, Telegram 1)" in out
     assert "клиенты: всего 2, новых 1, заходили 2" in out
     assert "Ответ 3 (клиентов: 2)" in out and "chat: вызовы 1, токены 1000/500, 0,30 ₽" in out
-    assert "Qwen-Image-2.1: вызовы 1, картинки 2, —" in out
+    assert "Qwen-Image-2.1: вызовы 1, изображения 2, —" in out
     assert "себестоимость: 0,30 ₽" in out and "нет в прайсе (не посчитаны): Qwen-Image-2.1" in out
     assert "looma dev: вызовы моделей 3" in out and "cl_bob" in out

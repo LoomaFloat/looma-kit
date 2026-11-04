@@ -1,7 +1,7 @@
-"""`looma` — приложение от исходников до прода из терминала.
+"""`looma`: сервис от исходников до прода из терминала.
 
-    looma login                    ключ проекта (страница ключей консоли)
-    looma init hello               заготовка приложения
+    looma login                    ключ проекта (кабинет автора, раздел «Подключение»)
+    looma init hello               заготовка сервиса
     looma dev                      запустить у себя: база и бакет в Docker, модели — dev-токеном
     looma deploy                   собрать релиз и поставить на staging
     looma status                   окружения, адреса, процессы
@@ -9,10 +9,10 @@
     looma promote                  staging → prod
     looma rollback                 prod — на прошлый релиз
     looma secrets set KEY=VALUE    секреты процессов
-    looma publish                  карточку — в маркетплейс (через модерацию)
+    looma publish                  карточку и цены — в маркетплейс (через модерацию)
     looma stats                    запросы, клиенты, события, себестоимость
 
-Приложение — из `--app`, иначе имя из `looma.yaml` текущей папки.
+Сервис (app) берётся из `--app`, иначе по имени из `looma.yaml` текущей папки.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ def _app_name(args, root: Optional[Path] = None) -> str:
     name = manifest_name(root)
     if name:
         return name
-    raise Stop(f"какое приложение? Укажите --app или запустите в папке с {MANIFEST}")
+    raise Stop(f"какой сервис? Укажите --app или запустите в папке с {MANIFEST}")
 
 
 def _when(ts) -> str:
@@ -72,7 +72,8 @@ def cmd_login(args) -> None:
     looma = Looma(api_url=args.api, key="")
     key = (args.key or "").strip()
     if not key and args.paste:
-        say(f"Выпустите ключ на странице {config.KEYS_PAGE} и вставьте его сюда.")
+        say(f"Выпустите ключ в кабинете автора, в разделе «Подключение» ({config.KEYS_PAGE}), "
+            "и вставьте его сюда.")
         key = getpass.getpass("ключ: ").strip()
     if not key:
         key = _device_login(looma, open_browser=not args.no_browser)
@@ -87,7 +88,7 @@ def cmd_login(args) -> None:
 
 
 def _device_login(looma: Looma, *, open_browser: bool = True) -> str:
-    """Вход через браузер: код здесь, подтверждение в консоли, ключ — сюда."""
+    """Вход через браузер: код здесь, подтверждение в кабинете автора, ключ — сюда."""
     from loomafloat.http import send_json
 
     codes = send_json("POST", looma.url("/api/device/code"),
@@ -200,7 +201,7 @@ def cmd_check(args) -> None:
     if result.get("body"):
         say(result["body"][:600])
     if not result["ok"]:
-        raise Stop("приложение не ответило как надо: `looma logs --env "
+        raise Stop("сервис не ответил как надо: `looma logs --env "
                    f"{args.env}` покажет почему")
 
 
@@ -265,7 +266,7 @@ def cmd_deploy(args) -> None:
 
 def _stop_on_signals() -> dict:
     """Закрыли терминал или прислали SIGTERM — остановиться, как по Ctrl+C:
-    процессы приложения не должны остаться без хозяина. Вернуть — что было."""
+    процессы сервиса не должны остаться без хозяина. Вернуть — что было."""
     def stop(_signum, _frame):
         raise KeyboardInterrupt
     before = {}
@@ -355,7 +356,7 @@ def cmd_status(args) -> None:
 def cmd_apps(args) -> None:
     rows = _looma(args).apps.list()
     if not rows:
-        say("приложений нет — `looma init`, потом `looma deploy`")
+        say("сервисов нет: `looma init`, потом `looma deploy`")
     for a in rows:
         say(f"{a['name']:<24} staging {a.get('staging_release') or '—':<4} "
             f"prod {a.get('prod_release') or '—':<4} {(a.get('urls') or {}).get('prod') or ''}")
@@ -433,7 +434,7 @@ def cmd_open(args) -> None:
     name = _app_name(args)
     url = (_looma(args).apps.get(name).get("urls") or {}).get(args.env)
     if not url:
-        raise Stop("адреса нет: у платформы не настроен домен приложений")
+        raise Stop("адреса нет: у платформы не настроен домен сервисов")
     say(url)
     if not args.print_only:
         webbrowser.open(url)
@@ -489,8 +490,9 @@ def cmd_publish(args) -> None:
     looma = _looma(args)
     name = _app_name(args)
     doc = looma.apps.publish(name)
-    say(f"{name}: карточка из релиза на prod — версия {doc['pending']} на модерации")
-    say("ответ модератора — `looma listing`")
+    say(f"{name}: карточка и цены из релиза на prod отправлены на модерацию, "
+        f"версия {doc['pending']}")
+    say("ответ модератора покажет `looma listing`")
 
 
 def cmd_listing(args) -> None:
@@ -510,7 +512,7 @@ def cmd_destroy(args) -> None:
         raise Stop(f"удаление {name} необратимо — база, бакет и релизы уйдут вместе с ним; "
                    "повторите с --yes")
     _looma(args).apps.delete(name)
-    say(f"{name} удалено")
+    say(f"сервис {name} удалён")
 
 
 # ---------------------------------------------------------------- MCP
@@ -546,7 +548,7 @@ def cmd_mcp(args) -> None:
 
 # -------------------------------------------------------------- разбор
 def parser() -> argparse.ArgumentParser:
-    top = argparse.ArgumentParser(prog="looma", description="Приложения на Looma из терминала")
+    top = argparse.ArgumentParser(prog="looma", description="Сервисы на Looma Float из терминала")
     top.add_argument("--version", action="version", version=f"looma {__version__}")
     top.add_argument("--api", help="адрес API (по умолчанию из `looma login`)")
     sub = top.add_subparsers(dest="command", required=True)
@@ -555,7 +557,7 @@ def parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, help=help_text, description=help_text)
         p.set_defaults(handler=handler)
         if app:
-            p.add_argument("--app", help="приложение (по умолчанию — из looma.yaml)")
+            p.add_argument("--app", help="сервис (по умолчанию — из looma.yaml)")
         return p
 
     p = command("login", cmd_login, "войти: через браузер или ключом проекта")
@@ -565,11 +567,11 @@ def parser() -> argparse.ArgumentParser:
     command("logout", cmd_logout, "забыть ключ")
     command("whoami", cmd_whoami, "кто я и в каком проекте")
 
-    p = command("init", cmd_init, "заготовка приложения из шаблона")
+    p = command("init", cmd_init, "заготовка сервиса из шаблона")
     p.add_argument("dir", nargs="?", help="папка (по умолчанию — имя шаблона)")
     p.add_argument("--template", "-t", default="hello",
-                   help="шаблон: hello, assistant, telegram-bot, image-studio, video-studio")
-    p.add_argument("--name", help="имя приложения (по умолчанию — имя папки)")
+                   help="шаблон: hello, assistant, image-studio, video-studio")
+    p.add_argument("--name", help="имя сервиса (по умолчанию — имя папки)")
 
     p = command("sdk", cmd_sdk, "положить в проект свежую копию SDK (папка loomafloat/)")
     p.add_argument("dir", nargs="?", default=".", help="папка с looma.yaml (по умолчанию — текущая)")
@@ -596,14 +598,14 @@ def parser() -> argparse.ArgumentParser:
 
     command("models", cmd_models, "модели каталога: имя, тип, отвечает или спит")
 
-    p = command("check", cmd_check, "запрос к вебу приложения: код, время, начало ответа",
+    p = command("check", cmd_check, "запрос к вебу сервиса: код, время, начало ответа",
                 app=True)
     p.add_argument("--env", choices=ENVIRONMENTS, default="staging")
-    p.add_argument("--path", default="/", help="путь на сайте приложения")
+    p.add_argument("--path", default="/", help="путь на сайте сервиса")
     p.add_argument("--public", action="store_true",
                    help="по публичному адресу, как гость (иначе — через API владельца)")
 
-    p = command("skill", cmd_skill, "skills Looma для ИИ-агентов")
+    p = command("skill", cmd_skill, "skills Looma Float для ИИ-агентов")
     p.add_argument("action", nargs="?", choices=("install", "path"), default="install",
                    help="install — поставить (по умолчанию), path — где лежат")
     p.add_argument("--agent", action="append", choices=tuple(ops.SKILL_DIRS),
@@ -616,9 +618,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--promote", action="store_true", help="и сразу на prod")
     p.add_argument("--no-wait", action="store_true", help="не ждать сборки")
 
-    command("releases", cmd_releases, "релизы приложения", app=True)
+    command("releases", cmd_releases, "релизы сервиса", app=True)
     command("status", cmd_status, "окружения, адреса, процессы", app=True)
-    command("apps", cmd_apps, "мои приложения")
+    command("apps", cmd_apps, "мои сервисы")
 
     p = command("logs", cmd_logs, "лог процесса", app=True)
     p.add_argument("process", nargs="?", help="процесс (по умолчанию web)")
@@ -637,7 +639,7 @@ def parser() -> argparse.ArgumentParser:
                 app=True)
     p.add_argument("process")
     p.add_argument("--env", choices=ENVIRONMENTS, default="prod")
-    p = command("open", cmd_open, "открыть адрес приложения", app=True)
+    p = command("open", cmd_open, "открыть адрес сервиса", app=True)
     p.add_argument("--env", choices=ENVIRONMENTS, default="prod")
     p.add_argument("--print-only", action="store_true", help="только напечатать адрес")
 
@@ -648,7 +650,8 @@ def parser() -> argparse.ArgumentParser:
     p = command("stats", cmd_stats, "статистика: запросы, клиенты, события, модели, себестоимость",
                 app=True)
     p.add_argument("--days", type=int, default=30, help="за сколько дней (до 90)")
-    command("publish", cmd_publish, "карточку из релиза на prod — в маркетплейс (через модерацию)",
+    command("publish", cmd_publish,
+            "отправить в маркетплейс карточку и цены из релиза на prod (через модерацию)",
             app=True)
     command("listing", cmd_listing, "карточка в маркетплейсе: в каталоге, на модерации, отказ",
             app=True)
@@ -659,7 +662,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--install-skill", action="store_true",
                    help="поставить skills для Claude Code (то же, что `looma skill install`)")
 
-    p = command("destroy", cmd_destroy, "удалить приложение со всеми данными", app=True)
+    p = command("destroy", cmd_destroy, "удалить сервис со всеми данными", app=True)
     p.add_argument("--yes", action="store_true")
     return top
 

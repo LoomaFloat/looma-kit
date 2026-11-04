@@ -1,14 +1,14 @@
 # Node.js: рецепты переноса
 
-`runtime: { kind: node, node: "22" }`. Платформа ставит зависимости (`npm ci`, если
-есть `package-lock.json`, иначе `npm install`), выполняет `npm run build --if-present`
-и задаёт `NODE_ENV=production`. pnpm и yarn: сгенерировать `package-lock.json`
-(`npm install --package-lock-only`) или собрать своим Dockerfile
-([recipes-docker.md](recipes-docker.md)).
+Укажите в `looma.yaml` `runtime: { kind: node, node: "22" }`. Площадка ставит
+зависимости (`npm ci`, если есть `package-lock.json`, иначе `npm install`), выполняет
+`npm run build --if-present` и задаёт `NODE_ENV=production`. Если вы используете pnpm
+или yarn, сгенерируйте `package-lock.json` (`npm install --package-lock-only`) или
+соберите образ своим Dockerfile ([Dockerfile и docker-compose](recipes-docker.md)).
 
 ## Запуск веба
 
-Слушать `0.0.0.0` на `process.env.PORT`:
+Веб-процесс должен слушать `0.0.0.0` на порту из `process.env.PORT`:
 
 ```js
 const port = Number(process.env.PORT || 3000);
@@ -24,56 +24,61 @@ app.listen(port, "0.0.0.0");
 | SvelteKit (adapter-node) | `node build` (слушает `PORT`, `HOST=0.0.0.0`) |
 | Remix, Astro (node) | команда `start` из `package.json`, с `PORT` и `0.0.0.0` |
 
-`devDependencies` при сборке ставятся (`npm ci` без `--omit=dev`), так что сборка
-фронтенда работает. Сборка ограничена 1 ГБ памяти и 30 минутами: большой фронтенд
-может не уложиться — тогда `NODE_OPTIONS=--max-old-space-size=900` в скрипте сборки
-или готовая сборка в архиве релиза.
+`devDependencies` при сборке ставятся (`npm ci` без `--omit=dev`), поэтому сборка
+фронтенда работает. Сборка ограничена 1 ГБ памяти и 30 минутами, и большой фронтенд
+может не уложиться. Тогда задайте `NODE_OPTIONS=--max-old-space-size=900` в скрипте
+сборки или положите готовую сборку в архив релиза.
 
 ## Прокси: выход в интернет из Node.js
 
-Из песочницы наружу можно только через прокси (`HTTP_PROXY`, `HTTPS_PROXY`).
+Из песочницы наружу можно выйти только через прокси (`HTTP_PROXY`, `HTTPS_PROXY`).
 Встроенный `fetch` Node.js и многие клиенты на нём (в том числе OpenAI SDK) по
-умолчанию переменные прокси не читают — запросы наружу и к `LOOMA_API_URL` не
-пройдут. Варианты:
+умолчанию переменные прокси не читают. Без настройки запросы наружу и к
+`LOOMA_API_URL` не пройдут. Выберите один из вариантов.
 
-1. Включить прокси для всего процесса через `undici` в точке входа:
+1. Включите прокси для всего процесса через `undici` в точке входа:
 
    ```js
    import { setGlobalDispatcher, EnvHttpProxyAgent } from "undici";
    setGlobalDispatcher(new EnvHttpProxyAgent());
    ```
 
-   (пакет `undici` в зависимости; влияет на глобальный `fetch`).
-2. Node.js с поддержкой переменной `NODE_USE_ENV_PROXY=1` — задать её в `cmd`:
-   `NODE_USE_ENV_PROXY=1 node server.js`. Проверить на staging, что вызовы проходят.
-3. `axios` читает `HTTPS_PROXY` сам; для `node-fetch`, `got` — агент
+   Добавьте пакет `undici` в зависимости. Настройка действует на глобальный `fetch`.
+2. Если ваша версия Node.js поддерживает переменную `NODE_USE_ENV_PROXY=1`, задайте её
+   в `cmd`: `NODE_USE_ENV_PROXY=1 node server.js`. Проверьте на staging, что вызовы
+   проходят.
+3. `axios` читает `HTTPS_PROXY` сам. Для `node-fetch` и `got` подключите агент
    `https-proxy-agent`.
 
-Как проверить: `looma logs --env staging` — прокси пишет в лог процесса строку на
-каждый адрес, куда ходило приложение; ошибки соединения видны там же.
+Проверьте результат командой `looma logs --env staging`. Прокси пишет в лог процесса
+строку на каждый адрес, к которому обращался сервис. Ошибки соединения видны там же.
 
 ## Модели
 
 ```js
 import OpenAI from "openai";
-const looma = new OpenAI({ baseURL: process.env.LOOMA_API_URL + "/v1",
+const looma = new OpenAI({ baseURL: process.env.LOOMA_API_URL,
                            apiKey: process.env.LOOMA_APP_TOKEN, timeout: 300_000 });
 ```
 
-Имена моделей — из `looma models`, каждую — в `gpu:` манифеста ([models.md](models.md)).
-Vercel AI SDK: `createOpenAI({ baseURL, apiKey })` из `@ai-sdk/openai` с теми же
-значениями.
+Имена моделей возьмите из `looma models` и каждую укажите в разделе `gpu:` манифеста
+([Модели](models.md)). Для Vercel AI SDK используйте `createOpenAI({ baseURL, apiKey })`
+из `@ai-sdk/openai` с теми же значениями.
 
 ## Данные
 
-`pg` с `connectionString: process.env.DATABASE_URL`; Prisma — `provider = "postgresql"`
-и `prisma migrate deploy` в `cmd` перед запуском. Файлы — `@aws-sdk/client-s3` с
-`forcePathStyle: true` ([data.md](data.md#files)). Сессии в памяти процесса теряются
-при сне — хранить в Postgres (`connect-pg-simple`) или подписанных cookie.
+Для `pg` задайте `connectionString: process.env.DATABASE_URL`. Для Prisma укажите
+`provider = "postgresql"` и выполняйте `prisma migrate deploy` в `cmd` перед запуском.
+Файлы храните в бакете через `@aws-sdk/client-s3` с `forcePathStyle: true`
+([Данные](data.md#files)).
+
+Сессии в памяти процесса теряются, когда сервис засыпает. Храните их в Postgres
+(`connect-pg-simple`) или в подписанных cookie.
 
 ## WebSocket, socket.io
 
-Шлюз WebSocket не пропускает. socket.io без сокета откатывается на HTTP long-polling:
-`transports: ["polling"]` на клиенте и сервере — вариант для уведомлений, проверить на
-staging.
-Стрим ответа модели — SSE (`text/event-stream`).
+Шлюз WebSocket не пропускает. Без сокета socket.io переходит на HTTP long-polling:
+задайте `transports: ["polling"]` на клиенте и на сервере. Для уведомлений этого
+хватает, но проверьте работу на staging.
+
+Потоковый ответ модели отдавайте через SSE (`text/event-stream`).

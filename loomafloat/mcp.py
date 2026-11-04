@@ -1,4 +1,4 @@
-"""MCP-сервер Looma: приложения из Claude Code, Cursor и других агентов.
+"""MCP-сервер Looma Float: сервисы из Claude Code, Cursor и других агентов.
 
     claude mcp add looma -- looma mcp
     # Cursor: ~/.cursor/mcp.json → {"mcpServers": {"looma": {"command": "looma", "args": ["mcp"]}}}
@@ -27,8 +27,9 @@ from loomafloat.pack import PackError
 
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
-INSTRUCTIONS = """Looma — хостинг приложений с GPU-моделями. У приложения два окружения:
-staging (сюда встаёт каждый новый релиз) и prod (сюда — только переводом).
+INSTRUCTIONS = """Looma Float размещает сервисы с GPU-моделями. У сервиса (аргумент app)
+два окружения: staging (сюда встаёт каждый новый релиз) и prod (сюда — только
+переводом).
 
 Правила:
 1. Проверь перед записью: перед looma_deploy, looma_promote, looma_rollback,
@@ -39,11 +40,11 @@ staging (сюда встаёт каждый новый релиз) и prod (сю
    looma_logs нужного процесса и окружения, и только потом выводы.
 3. На prod — только когда staging проверен, или когда пользователь просит
    явно. looma_destroy — только по прямой просьбе пользователя, это
-   необратимо (база и бакет уходят вместе с приложением).
+   необратимо (база и бакет уходят вместе с сервисом).
 4. Значения секретов не пересказывай и не пиши в файлы проекта: только
    looma_secrets_set. Процессы видят новые секреты после перезапуска.
 5. Сборка не удалась — причина в log_tail результата looma_deploy; поправь
-   проект и деплой снова. Модели приложение зовёт только те, что объявлены в
+   проект и деплой снова. Модели сервис зовёт только те, что объявлены в
    gpu: манифеста looma.yaml (иначе 403).
 6. Запустить у себя до деплоя — `looma dev` в терминале пользователя: окружение
    как на платформе, база и бакет в Docker, секреты — в .env проекта.
@@ -54,7 +55,7 @@ staging (сюда встаёт каждый новый релиз) и prod (сю
 
 
 def _app_prop():
-    return {"type": "string", "description": "имя приложения (как в looma.yaml) или его id"}
+    return {"type": "string", "description": "имя сервиса (как в looma.yaml) или его id"}
 
 
 ENV = {"type": "string", "enum": ["prod", "staging"], "description": "окружение"}
@@ -62,19 +63,19 @@ ENV = {"type": "string", "enum": ["prod", "staging"], "description": "окруж
 TOOLS = [
     {"name": "looma_whoami", "description": "Кто я: учётная запись, проект, права ключа.",
      "inputSchema": {"type": "object", "properties": {}}},
-    {"name": "looma_apps", "description": "Мои приложения с релизами окружений и адресами.",
+    {"name": "looma_apps", "description": "Мои сервисы с релизами окружений и адресами.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "looma_status",
-     "description": "Состояние приложения: окружения (релиз, состояние, адрес), процессы, "
+     "description": "Состояние сервиса: окружения (релиз, состояние, адрес), процессы, "
                     "сертификат, последние переключения. Вызывать перед любым изменением.",
      "inputSchema": {"type": "object", "properties": {"app": _app_prop()}, "required": ["app"]}},
     {"name": "looma_init",
-     "description": "Создать проект приложения из шаблона в папке на диске.",
+     "description": "Создать проект сервиса из шаблона в папке на диске.",
      "inputSchema": {"type": "object", "properties": {
          "directory": {"type": "string", "description": "папка проекта (будет создана)"},
          "template": {"type": "string", "description": "шаблон",
                       "enum": ops.templates()},
-         "name": {"type": "string", "description": "имя приложения (латиница, цифры, дефис)"}},
+         "name": {"type": "string", "description": "имя сервиса (латиница, цифры, дефис)"}},
          "required": ["directory"]}},
     {"name": "looma_assess",
      "description": "Оценить проект в папке: подойдёт ли площадке, что мешает (блокеры), что "
@@ -102,7 +103,7 @@ TOOLS = [
          "app": {"type": "string", "description": "имя, если не то, что в looma.yaml"},
          "promote": {"type": "boolean", "default": False}},
          "required": ["directory"]}},
-    {"name": "looma_releases", "description": "Релизы приложения: номер, статус, ошибка.",
+    {"name": "looma_releases", "description": "Релизы сервиса: номер, статус, ошибка.",
      "inputSchema": {"type": "object", "properties": {"app": _app_prop()}, "required": ["app"]}},
     {"name": "looma_logs",
      "description": "Лог процесса: идущего — с узла, упавшего — сохранённый хвост.",
@@ -111,13 +112,13 @@ TOOLS = [
          "environment": ENV, "tail": {"type": "integer", "default": 100}},
          "required": ["app"]}},
     {"name": "looma_check",
-     "description": "Запрос к вебу приложения и код, время, начало ответа — проверка после "
+     "description": "Запрос к вебу сервиса и код, время, начало ответа — проверка после "
                     "записи. По умолчанию через API владельца: доходит до процесса и при "
                     "access: clients. public=true — по публичному адресу, как гость (шлюз, "
                     "сертификат, вход). Спящий веб просыпается этим запросом (до двух минут).",
      "inputSchema": {"type": "object", "properties": {
          "app": _app_prop(), "environment": ENV,
-         "path": {"type": "string", "default": "/", "description": "путь на сайте приложения"},
+         "path": {"type": "string", "default": "/", "description": "путь на сайте сервиса"},
          "public": {"type": "boolean", "default": False}},
          "required": ["app"]}},
     {"name": "looma_promote", "description": "На prod — релиз staging (или названный).",
@@ -144,14 +145,14 @@ TOOLS = [
          "values": {"type": "object", "additionalProperties": {"type": ["string", "null"]}}},
          "required": ["app", "values"]}},
     {"name": "looma_stats",
-     "description": "Статистика приложения за days дней: запросы по каналам, клиенты, события "
+     "description": "Статистика сервиса за days дней: запросы по каналам, клиенты, события "
                     "charge, вызовы моделей и себестоимость по прайсу.",
      "inputSchema": {"type": "object", "properties": {
          "app": _app_prop(), "days": {"type": "integer", "default": 30}}, "required": ["app"]}},
     {"name": "looma_publish",
-     "description": "Опубликовать карточку приложения в маркетплейсе: берётся раздел listing "
-                    "из looma.yaml релиза на prod, версия уходит на модерацию. Только по "
-                    "просьбе пользователя — карточку увидят все.",
+     "description": "Опубликовать карточку сервиса в маркетплейсе: берутся разделы listing "
+                    "и events (цены) из looma.yaml релиза на prod, версия уходит на "
+                    "модерацию. Только по просьбе пользователя — карточку увидят все.",
      "inputSchema": {"type": "object", "properties": {"app": _app_prop()}, "required": ["app"]}},
     {"name": "looma_listing",
      "description": "Карточка в маркетплейсе: в каталоге ли, что на модерации, причина отказа.",
@@ -161,8 +162,8 @@ TOOLS = [
                     "модерацию). Только по просьбе пользователя.",
      "inputSchema": {"type": "object", "properties": {"app": _app_prop()}, "required": ["app"]}},
     {"name": "looma_destroy",
-     "description": "Удалить приложение со всеми данными. Необратимо: только по прямой просьбе "
-                    "пользователя; confirm — имя приложения ещё раз.",
+     "description": "Удалить сервис со всеми данными. Необратимо: только по прямой просьбе "
+                    "пользователя; confirm — имя сервиса ещё раз.",
      "inputSchema": {"type": "object", "properties": {
          "app": _app_prop(), "confirm": {"type": "string"}}, "required": ["app", "confirm"]}},
 ]
@@ -182,7 +183,7 @@ class Server:
             self._looma = Looma()
             self._looma.key = config.user_key()
         if not self._looma.key:
-            raise ops.OpError("нет ключа Looma: `looma login` в терминале или LOOMA_API_KEY")
+            raise ops.OpError("нет ключа Looma Float: `looma login` в терминале или LOOMA_API_KEY")
         return self._looma
 
     # -------------------------------------------------------- протокол
@@ -360,9 +361,9 @@ class Server:
 
     def looma_destroy(self, app: str, confirm: str):
         if confirm != app:
-            raise ops.OpError("confirm должен повторять имя приложения: удаление необратимо")
+            raise ops.OpError("confirm должен повторять имя сервиса: удаление необратимо")
         self.looma.apps.delete(app)
-        return f"{app} удалено вместе с базой, бакетом и релизами"
+        return f"сервис {app} удалён вместе с базой, бакетом и релизами"
 
 
 def serve(stdin=None, stdout=None, looma: Optional[Looma] = None) -> None:

@@ -1,15 +1,15 @@
-"""Looma для авторов приложений: SDK вызовов моделей и CLI `looma`.
+"""Looma Float для авторов сервисов: SDK вызовов моделей и CLI `looma`.
 
     from loomafloat import Looma
 
     looma = Looma()
     print(looma.chat("Qwen3.8-Flash-Next-NVFP4", "Привет!"))
 
-В процессе приложения ключ и адрес API платформа кладёт в окружение сама
+В процессе сервиса ключ и адрес API платформа кладёт в окружение сама
 (`LOOMA_APP_TOKEN`, `LOOMA_API_URL`); на машине автора — `looma login`.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 from loomafloat.client import Apps, Looma, Video, client_of  # noqa: E402
 from loomafloat.http import LoomaError  # noqa: E402

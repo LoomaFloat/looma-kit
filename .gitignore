@@ -7,3 +7,9 @@ build/
 dist/
 .pytest_cache/
 .ruff_cache/
+# Примеры: копию SDK кладут `looma sdk` и `looma deploy`, данные оставляет `looma dev`.
+examples/*/loomafloat/
+examples/*/.env
+examples/*/data/
+examples/image-studio/gallery/
+examples/video-studio/videos/

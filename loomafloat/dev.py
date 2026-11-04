@@ -1,4 +1,4 @@
-"""`looma dev` — приложение на своей машине так же, как на платформе.
+"""`looma dev`: сервис на своей машине так же, как на платформе.
 
     looma dev                 база и бакет — в Docker, web и worker — здесь
     looma dev --docker        процессы — в образе, собранном как на платформе
@@ -9,12 +9,12 @@
 Процесс получает то же, что на платформе: `PORT`, `DATABASE_URL` и `PG*`,
 `AWS_*` и `LOOMA_BUCKET`, `LOOMA_APP_TOKEN` и `LOOMA_API_URL`, `LOOMA_APP`,
 `LOOMA_PROCESS`; `LOOMA_ENVIRONMENT` — `dev`. Модели вызываются dev-токеном
-приложения: только объявленные в gpu, с дневной квотой на приложение.
+сервиса: только объявленные в gpu, с дневной квотой на сервис.
 Манифест разбирает сервер — ошибки те же, что у `looma deploy`.
 
 Секреты — из `.env` в папке проекта (в релиз он не уезжает); значения с
 платформы сюда не приходят никогда. Ключ автора (`LOOMA_API_KEY`) и его
-`AWS_*` процессу не достаются: на платформе их у приложения тоже нет.
+`AWS_*` процессу не достаются: на платформе их у сервиса тоже нет.
 
 База и бакет — контейнеры `looma-dev-<имя>-postgres` и `looma-dev-<имя>-s3`
 из тех же образов, что у платформы; данные — в томах Docker и переживают
@@ -68,7 +68,7 @@ class DevError(RuntimeError):
 
 # ---------------------------------------------------------------- сессия
 def session(looma: Looma, root: Path, *, say: Say) -> dict:
-    """Dev-токен и разобранный сервером манифест; приложения нет — завести."""
+    """Dev-токен и разобранный сервером манифест; сервиса нет — завести."""
     root = Path(root).resolve()
     path = root / MANIFEST
     if not path.is_file():
@@ -78,7 +78,7 @@ def session(looma: Looma, root: Path, *, say: Say) -> dict:
         raise DevError(f"в {MANIFEST} нет строки `name: …`")
     if looma.apps.find(name) is None:
         looma.apps.create(name)
-        say(f"заведено приложение {name} (релизов пока нет — `looma deploy`)")
+        say(f"заведён сервис {name} (релизов пока нет — `looma deploy`)")
     found = looma.apps.dev(name, path.read_text(encoding="utf-8"))
     found["root"] = str(root)
     return found
@@ -200,7 +200,7 @@ def ensure_postgres(app: str, extensions: List[str], *, say: Say) -> dict:
         return docker("exec", name, "psql", "-U", "postgres", "-h", "127.0.0.1", "-d", database,
                       "-v", "ON_ERROR_STOP=1", "-tAc", sql, timeout=60).stdout.decode().strip()
 
-    # Как на платформе: база и роль приложения, расширения ставит администратор.
+    # Как на платформе: база и роль сервиса, расширения ставит администратор.
     psql(f"DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{DB_USER}') THEN "
          f"CREATE ROLE {DB_USER} LOGIN PASSWORD '{DB_PASSWORD}'; END IF; END $$")
     if psql(f"SELECT 1 FROM pg_database WHERE datname = '{DB_NAME}'") != "1":

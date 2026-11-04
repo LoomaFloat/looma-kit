@@ -1,16 +1,16 @@
-"""Студия картинок на Looma: генерация, правка и галерея в своём бакете.
+"""Студия изображений на Looma Float: генерация, правка и галерея в своём бакете.
 
     GET  /                страница
     POST /api/generate    {"prompt", "size"?, "seed"?}       → {"id"}
-    POST /api/edit        {"id", "prompt"}                    → {"id"} — правка картинки галереи
+    POST /api/edit        {"id", "prompt"}                    → {"id"} — правка изображения из галереи
     POST /api/draw        {"prompt", "size"?}                 → PNG — для агентов (инструмент MCP draw)
-    GET  /api/images      последние картинки с подписями
-    GET  /img/<id>.png    сама картинка
+    GET  /api/images      последние изображения с подписями
+    GET  /img/<id>.png    само изображение
 
-Картинки — в бакете приложения (платформа даёт `LOOMA_BUCKET` и ключи S3), рядом
-с каждой — её подпись (`<id>.json`). Без бакета — в папке `gallery/`.
+Изображения — в бакете сервиса (платформа даёт `LOOMA_BUCKET` и ключи S3), рядом
+с каждым — его подпись (`<id>.json`). Без бакета — в папке `gallery/`.
 
-У каждого клиента маркетплейса (X-Looma-Client) — своя галерея: чужую картинку
+У каждого клиента маркетплейса (X-Looma-Client) — своя галерея: чужое изображение
 не увидеть и не поправить. Посетители без входа делят одну общую.
 """
 
@@ -31,7 +31,7 @@ _ID = re.compile(r"^[0-9a-f]{12}-[0-9a-f]{6}$")
 
 
 class Bucket:
-    """Бакет приложения, а локально — папка."""
+    """Бакет сервиса, а локально — папка."""
 
     def __init__(self):
         self.name = os.environ.get("LOOMA_BUCKET", "")
@@ -84,7 +84,7 @@ def meta_of(image_id):
 
 
 def mine(image_id, client):
-    """Картинка этого клиента (или общая — у посетителя без входа)."""
+    """Изображение этого клиента (или общее — у посетителя без входа)."""
     meta = meta_of(image_id) if _ID.match(image_id or "") else None
     return meta is not None and meta.get("client", "") == (client or "")
 
@@ -120,7 +120,7 @@ PAGE = """<!doctype html><html lang="ru"><meta charset="utf-8">
 <button id="b">Нарисовать</button></form><div id="status"></div><div id="grid"></div></main>
 <script>
 const $=id=>document.getElementById(id);
-async function call(url,body){$('b').disabled=true;$('status').textContent='Рисую… (до минуты, первая картинка дольше)';
+async function call(url,body){$('b').disabled=true;$('status').textContent='Рисую… (до минуты, первое изображение дольше)';
  try{const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const t=await r.text();if(!r.ok){$('status').textContent='Ошибка: '+t;return}$('status').textContent='';load()}
  catch(e){$('status').textContent='Ошибка связи: '+e}finally{$('b').disabled=false}}
@@ -157,7 +157,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, bucket.get(f"{found.group(1)}.png"), "image/png")
             except Exception:
                 pass
-            return self._send(404, "нет такой картинки", "text/plain; charset=utf-8")
+            return self._send(404, "нет такого изображения", "text/plain; charset=utf-8")
         self._send(200, PAGE, "text/html; charset=utf-8")
 
     def do_POST(self):
@@ -182,7 +182,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path.startswith("/api/edit"):
                 parent = str(body.get("id") or "")
                 if not mine(parent, client):
-                    raise ValueError("какую картинку править?")
+                    raise ValueError("какое изображение править?")
                 png = ai.image(MODEL, prompt, images=[bucket.get(f"{parent}.png")])[0]
                 return self._send(200, {"id": save(png, prompt, parent, client)})
             return self._send(404, "нет такого пути", "text/plain; charset=utf-8")
@@ -199,5 +199,5 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
     where = f"бакет {bucket.name}" if bucket.name else "папка gallery/"
-    print(f"студия на {MODEL}, картинки — {where}, слушаю 0.0.0.0:{port}", flush=True)
+    print(f"студия на {MODEL}, изображения — {where}, слушаю 0.0.0.0:{port}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", port), Handler).serve_forever()

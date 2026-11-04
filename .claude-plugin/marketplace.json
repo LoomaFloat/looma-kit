@@ -1,7 +1,7 @@
 {
   "name": "looma-kit",
   "owner": { "name": "Looma Float", "url": "https://loomafloat.ru" },
-  "description": "Looma для ИИ-агентов: перенос проектов на площадку Looma, деплой и работа с приложениями.",
+  "description": "Looma Float для ИИ-агентов: перенос проектов на площадку Looma Float, деплой и работа с сервисами.",
   "plugins": [
     {
       "name": "looma",

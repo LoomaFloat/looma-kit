@@ -68,7 +68,7 @@ def test_a_process_gets_the_platform_env_and_not_the_authors(api, capsys, tmp_pa
     code, out, err = run(capsys, "--api", base, "dev", "run", "job", "--no-data",
                          "--dir", str(root))
     assert code == 0, out + err
-    assert "заведено приложение devapp" in out and "MISSING_Y" in out
+    assert "заведён сервис devapp" in out and "MISSING_Y" in out
     assert state.dev_texts == [(root / "looma.yaml").read_text()]
     import json
     env = json.loads(next(line for line in out.splitlines() if "ENV " in line).split("ENV ", 1)[1])

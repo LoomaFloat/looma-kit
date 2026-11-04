@@ -1,4 +1,4 @@
-"""Telegram-бот на Looma: картинки, правка фото и видео по описанию.
+"""Telegram-бот на Looma Float: изображения, правка фото и видео по описанию.
 
 Вебхук бот ставит сам, на платформу (`LOOMA_TELEGRAM_WEBHOOK_URL`, канал
 `telegram` в looma.yaml): она сверяет секрет Telegram и приносит обновление на
@@ -32,7 +32,7 @@ PLATFORM_URL = os.environ.get("LOOMA_TELEGRAM_WEBHOOK_URL", "").strip()
 #: Секрет вебхука: от платформы или из токена — одинаковый во всех процессах.
 SECRET = (os.environ.get("LOOMA_TELEGRAM_SECRET", "").strip()
           or (hashlib.sha256(f"looma-webhook:{TOKEN}".encode()).hexdigest()[:48] if TOKEN else ""))
-HELP = ("Пришлите описание — нарисую картинку.\n"
+HELP = ("Пришлите описание, и я нарисую изображение.\n"
         "Фото с подписью — поправлю фото по подписи.\n"
         "/video описание — сниму ролик на 5 секунд (это несколько минут).")
 #: Одновременно в работе — не больше стольких заданий; остальные ждут.

@@ -1,7 +1,7 @@
 [project]
 name = "loomafloat"
-version = "0.2.0"
-description = "Looma для авторов приложений и ИИ-агентов: CLI `looma`, SDK вызовов моделей, MCP-сервер и skills переноса проектов"
+version = "0.3.0"
+description = "Looma Float для авторов сервисов и ИИ-агентов: CLI `looma`, SDK вызовов моделей, MCP-сервер и skills переноса проектов"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -29,7 +29,7 @@ packages = ["loomafloat"]
 "skills" = "loomafloat/skills"
 
 [tool.hatch.build.targets.sdist]
-exclude = ["/.github", "/tests"]
+exclude = ["/.github", "/tests", "/examples"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Оценка проекта для Looma: подойдёт ли он площадке и что в нём переделать.
+"""Оценка проекта для Looma Float: подойдёт ли он площадке и что в нём переделать.
 
     python3 assess.py [папка] [--json]
 
@@ -333,8 +333,8 @@ class Rule:
 RULES: List[Rule] = [
     # --- модели на своей видеокарте
     Rule("local-llm-server", "blocker", "Своя языковая модель на GPU (Ollama, vLLM, llama.cpp)",
-         "В песочнице площадки нет GPU. Модели считает сеть Looma: вызовы нужно перевести на "
-         "модели каталога по API (OpenAI-совместимый), а свой сервер модели убрать.",
+         "В песочнице площадки нет GPU. Модели считает сеть Looma Float: вызовы нужно перевести "
+         "на модели каталога по API (OpenAI-совместимый), а свой сервер модели убрать.",
          "references/models.md",
          py=("vllm", "llama-cpp-python", "llama_cpp", "ctransformers", "exllamav2", "ollama",
              "auto-gptq", "awq", "text-generation-inference", "tensorrt-llm", "mlx-lm"),
@@ -343,15 +343,14 @@ RULES: List[Rule] = [
          images=("ollama", "vllm", "text-generation-inference", "llama.cpp", "localai")),
     Rule("cuda", "blocker", "Код рассчитан на CUDA",
          "В песочнице нет GPU: `.cuda()` и `device=\"cuda\"` не заработают. Если это инференс "
-         "модели — заменить на модель каталога; если обучение — площадка приложений для него "
-         "не подходит.",
+         "модели — заменить на модель каталога; если обучение — площадка для него не подходит.",
          "references/models.md",
          code=(r"\.cuda\(\)|device\s*=\s*['\"]cuda|torch\.device\(\s*['\"]cuda|"
                r"CUDA_VISIBLE_DEVICES|FROM\s+nvidia/|--gpus\b|driver:\s*nvidia",),
          code_in=(".py", "dockerfile", "docker-compose", "compose.")),
     Rule("heavy-ml", "change", "Тяжёлые ML-пакеты (torch, tensorflow, transformers, diffusers)",
          "Сборка идёт с 1 ГБ памяти и до 30 минут, образ вырастет на гигабайты, считать на CPU "
-         "медленно. Почти всегда правильнее вызывать модели каталога (текст, картинки, видео, "
+         "медленно. Почти всегда правильнее вызывать модели каталога (текст, изображения, видео, "
          "векторы, ре-ранк) и убрать эти пакеты из зависимостей.",
          "references/models.md",
          py=("torch", "tensorflow", "tensorflow-gpu", "jax", "jaxlib", "transformers", "diffusers",
@@ -361,7 +360,7 @@ RULES: List[Rule] = [
          node=("@tensorflow/tfjs-node", "@tensorflow/tfjs-node-gpu", "@xenova/transformers",
                "@huggingface/transformers", "onnxruntime-node")),
     Rule("speech", "blocker", "Распознавание или синтез речи своей моделью",
-         "Модели считаются только в сети Looma. Если в `looma models` нет модели нужного типа — "
+         "Модели считаются только в сети Looma Float. Если в `looma models` нет модели нужного типа — "
          "это блокер; внешний API по HTTPS остаётся вариантом (ключ — секретом).",
          "references/models.md",
          py=("openai-whisper", "whisper", "faster-whisper", "faster_whisper", "whisperx", "tts",
@@ -369,8 +368,8 @@ RULES: List[Rule] = [
              "pyannote")),
     Rule("external-llm-api", "note", "Внешний API моделей (OpenAI, Anthropic, Google и др.)",
          "Работает и на площадке: HTTPS наружу открыт, ключ — секретом (`looma secrets set`). "
-         "Либо перевести на модели Looma: OpenAI-совместимый адрес `$LOOMA_API_URL/v1` и токен "
-         "`$LOOMA_APP_TOKEN` — тогда вызовы учитываются на клиента маркетплейса.",
+         "Либо перевести на модели Looma Float: OpenAI-совместимый адрес `$LOOMA_API_URL` и "
+         "токен `$LOOMA_APP_TOKEN` — тогда вызовы учитываются на клиента маркетплейса.",
          "references/models.md",
          py=("openai", "anthropic", "google-generativeai", "google-genai", "mistralai", "cohere",
              "groq", "together", "replicate", "langchain-openai", "langchain-anthropic",
@@ -387,7 +386,7 @@ RULES: List[Rule] = [
     Rule("websocket", "blocker", "WebSocket",
          "Шлюз площадки WebSocket пока не пропускает (501). Потоковые ответы через SSE и "
          "обычный HTTP работают: если сокет нужен только для стрима или уведомлений — "
-         "перевести на SSE или опрос; если на нём держится всё приложение — блокер.",
+         "перевести на SSE или опрос; если на нём держится весь сервис — блокер.",
          "references/platform.md",
          py=("python-socketio", "socketio", "flask-socketio", "flask_socketio", "websockets",
              "channels", "django-channels", "simple-websocket"),
@@ -402,11 +401,11 @@ RULES: List[Rule] = [
          py=("gradio",)),
     Rule("notebook", "blocker", "Jupyter или Voilà",
          "Ноутбук-сервер держится на WebSocket, а шлюз его не пропускает. Логику из ноутбука "
-         "нужно вынести в обычное веб-приложение.",
+         "нужно вынести в обычный веб-сервис.",
          "references/platform.md",
          py=("jupyter", "jupyterlab", "notebook", "voila", "jupyter-server")),
     Rule("non-http", "blocker", "Сервер не на HTTP (gRPC, TCP, UDP)",
-         "Снаружи к приложению доходит только HTTP через шлюз. gRPC и свои TCP/UDP-серверы "
+         "Снаружи к сервису доходит только HTTP через шлюз. gRPC и свои TCP/UDP-серверы "
          "площадка не пропускает.",
          "references/platform.md",
          py=("grpcio", "grpcio-tools"),
@@ -655,16 +654,17 @@ def check_compose(project: Project) -> List[Finding]:
     built = [f"{e['where']} ({name})" for name, e in project.compose.items() if e.get("build")]
     if len(built) > 1:
         out.append(Finding("many-services", "change", "Несколько сервисов своего кода",
-                           "Приложение Looma — один образ и несколько процессов из него "
-                           "(web, worker, cron). Сервисы с разным кодом — либо в один образ "
-                           "разными командами, либо отдельными приложениями, которые ходят "
-                           "друг к другу по HTTPS.",
+                           "Сервис на Looma Float собирается в один образ и запускает из него "
+                           "несколько процессов (web, worker, cron). Сервисы docker-compose "
+                           "с разным кодом можно свести в один образ с разными командами или "
+                           "разнести по отдельным сервисам Looma Float, которые ходят друг к "
+                           "другу по HTTPS.",
                            "references/recipes-docker.md", built[:WHERE_MAX]))
     proxies = _image_hits(project, ("nginx", "traefik", "caddy", "haproxy", "certbot"))
     if proxies:
         out.append(Finding("reverse-proxy", "note", "Свой обратный прокси или TLS",
                            "Не нужен: домен, сертификат и маршрутизацию даёт шлюз площадки. "
-                           "Если nginx отдаёт статику — её отдаёт само приложение.",
+                           "Если nginx отдаёт статику, её будет отдавать сам сервис.",
                            "references/recipes-docker.md", proxies[:WHERE_MAX]))
     return out
 
@@ -905,7 +905,7 @@ def assess(root: Path) -> dict:
 
 def markdown(report: dict) -> str:
     p = report["project"]
-    out = [f"# Оценка проекта для Looma: {Path(p['path']).name}", "",
+    out = [f"# Оценка проекта для Looma Float: {Path(p['path']).name}", "",
            f"**Итог: {report['verdict']['text']}.**", "",
            "## Проект", "",
            f"- Языки: {', '.join(p['languages']) or 'не определены'}",

@@ -1,21 +1,30 @@
-# Looma Kit
+# looma-kit
 
-Всё, что нужно ИИ-агенту, чтобы перенести проект на площадку [Looma](https://loomafloat.ru)
-и работать с ним дальше: оценить проект, составить план, переделать код под
-`looma.yaml` и модели Looma, выкатить на staging, проверить и написать отчёт.
+Всё, что нужно ИИ-агенту, чтобы перенести проект на площадку
+[Looma Float](https://loomafloat.ru) и работать с ним дальше: оценить проект, составить
+план, переделать код под `looma.yaml` и модели сети Looma Float, выкатить на staging,
+проверить и написать отчёт. На площадке проект становится сервисом, а после модерации
+его карточка появляется в каталоге на витрине [market.loomafloat.ru](https://market.loomafloat.ru).
 
 Внутри:
 
 | Что | Зачем |
 |---|---|
 | skill **`looma-port`** | перенос проекта: оценка → план → переделка → деплой → проверка → отчёт |
-| skill **`looma-apps`** | работа с приложением на Looma: деплой, логи, откат, секреты, модели, статистика, публикация |
-| CLI **`looma`** | все действия из терминала; на нём работают оба skill |
-| MCP-сервер **`looma mcp`** | те же действия инструментами для агента (22 инструмента) |
-| SDK **`loomafloat`** | вызовы моделей Looma из кода на Python, без зависимостей |
+| skill **`looma-apps`** | работа с сервисом на Looma Float: деплой, логи, откат, секреты, модели, статистика, публикация |
+| CLI **`looma`** | все действия из терминала; на нём работают оба skill. Справка: [docs/cli.md](docs/cli.md) |
+| MCP-сервер **`looma mcp`** | те же действия в виде 22 инструментов для агента. Справка: [docs/mcp.md](docs/mcp.md) |
+| SDK **`loomafloat`** | вызовы моделей Looma Float из кода на Python, без зависимостей. Справка: [docs/sdk.md](docs/sdk.md) |
+| примеры **`examples/`** | код четырёх сервисов из каталога: ассистент, студия изображений, видеостудия, раскадровка. Список: [examples/README.md](examples/README.md) |
 
 Skills сделаны в открытом формате [Agent Skills](https://agentskills.io): их читают
 Claude Code, Cursor, OpenAI Codex, GitHub Copilot, Gemini CLI и другие агенты.
+
+Документация площадки: [docs.loomafloat.ru](https://docs.loomafloat.ru).
+
+- Сервис с нуля, шаг за шагом: [Быстрый старт](https://docs.loomafloat.ru/authors/quickstart/).
+- Готовый проект с ИИ-агентом: [Перенос проекта с ИИ-агентом](https://docs.loomafloat.ru/authors/port/).
+- Все поля манифеста: [Справка по looma.yaml](https://docs.loomafloat.ru/reference/looma-yaml/).
 
 ## Быстрый старт
 
@@ -26,10 +35,11 @@ looma skill install --agent claude                               # 3. skills д�
 claude mcp add --transport stdio --scope user looma -- looma mcp # 4. MCP (по желанию)
 ```
 
-Потом в агенте, в папке проекта: «Перенеси этот проект на Looma и выкати на staging».
+Потом скажите агенту в папке проекта: «Перенеси этот проект на Looma Float и выкати на
+staging».
 
-Для Claude Code вместо шагов 3 и 4 — плагин (ниже): одна установка ставит и skills,
-и MCP-сервер.
+Для Claude Code вместо шагов 3 и 4 можно поставить плагин (ниже): одна установка ставит
+и skills, и MCP-сервер.
 
 ---
 
@@ -61,28 +71,28 @@ uv tool install --reinstall "git+https://github.com/LoomaFloat/looma-kit"
 
 > **Агент в приложении с окном** (Cursor, VS Code) может не видеть `looma`, если
 > программа запущена не из терминала. Тогда выполните `uv tool update-shell`,
-> перезапустите приложение или укажите в настройке MCP полный путь — его покажет
+> перезапустите приложение или укажите в настройке MCP полный путь: его покажет
 > `which looma` (Windows: `where looma`).
 
 ## 2. Войти
 
 ```bash
-looma login      # откроется браузер: подтвердите вход в консоли Looma, ключ сохранится сам
+looma login      # откроется браузер: подтвердите вход в кабинете автора, ключ сохранится сам
 looma whoami     # проверка
 ```
 
-Для CI и серверов без браузера — ключом проекта: `looma login --key <ключ>` или
-переменная окружения `LOOMA_API_KEY`. Агенту ключ не нужен: CLI и MCP-сервер берут
-его из `looma login`.
+Для CI и серверов без браузера войдите ключом проекта: `looma login --key <ключ>` или
+переменная окружения `LOOMA_API_KEY`. Ключ выпускается в кабинете автора, в разделе
+«Подключение» (`console.loomafloat.ru/connect`). Агенту ключ не нужен: CLI и MCP-сервер
+берут его из `looma login`.
 
 ## 3. Подключить к агенту
 
-Для каждого агента — две части: **skills** (как действовать) и **MCP-сервер**
-(инструменты). MCP необязателен: без него агент выполняет те же действия командами
-`looma` в терминале.
+Агенту нужны две части: **skills** (как действовать) и **MCP-сервер** (инструменты).
+MCP необязателен: без него агент выполняет те же действия командами `looma` в терминале.
 
-`looma skill install` копирует оба skill туда, где агент их читает. Без `--project` —
-в домашний каталог (для всех проектов), с `--project` — в текущий проект (можно
+`looma skill install` копирует оба skill туда, где агент их читает. Без `--project` они
+ложатся в домашний каталог (для всех проектов), с `--project` в текущий проект (можно
 положить в git и поделиться с командой).
 
 | Агент | Skills | MCP |
@@ -99,7 +109,7 @@ looma whoami     # проверка
 
 ### Claude Code
 
-**Плагином** — skills и MCP-сервер одной установкой. В сессии Claude Code:
+**Плагином:** skills и MCP-сервер одной установкой. В сессии Claude Code:
 
 ```
 /plugin marketplace add LoomaFloat/looma-kit
@@ -113,8 +123,8 @@ claude plugin marketplace add LoomaFloat/looma-kit
 claude plugin install looma@looma-kit --scope user
 ```
 
-`--scope project` — плагин для этого проекта (запись в `.claude/settings.json`, её
-можно положить в git), `--scope local` — для проекта, только у вас.
+`--scope project` ставит плагин для этого проекта (запись в `.claude/settings.json`, её
+можно положить в git), `--scope local` для проекта, только у вас.
 
 Если на GitHub нет SSH-ключа и установка не проходит, перед запуском `claude`:
 
@@ -122,9 +132,9 @@ claude plugin install looma@looma-kit --scope user
 export CLAUDE_CODE_PLUGIN_PREFER_HTTPS=1
 ```
 
-Проверка: `/plugin` — плагин `looma` включён; `/mcp` — сервер `plugin:looma:looma`;
-skills вызываются как `/looma:looma-port` и `/looma:looma-apps` (или агент берёт их
-сам по задаче).
+Проверка: `/plugin` показывает, что плагин `looma` включён; `/mcp` показывает сервер
+`plugin:looma:looma`; skills вызываются как `/looma:looma-port` и `/looma:looma-apps`
+(или агент берёт их сам по задаче).
 
 Обновление:
 
@@ -146,7 +156,7 @@ looma skill install --agent claude              # ~/.claude/skills
 claude mcp add --transport stdio --scope user looma -- looma mcp
 ```
 
-Для одного проекта — `looma skill install --agent claude --project` (папка
+Для одного проекта: `looma skill install --agent claude --project` (папка
 `.claude/skills`) и `claude mcp add --transport stdio --scope project looma -- looma mcp`
 (файл `.mcp.json` в корне проекта):
 
@@ -164,10 +174,11 @@ claude mcp add --transport stdio --scope user looma -- looma mcp
 looma skill install --agent cursor              # ~/.cursor/skills
 ```
 
-В проект — `looma skill install --agent cursor --project` (`.cursor/skills`). Cursor
+В проект: `looma skill install --agent cursor --project` (`.cursor/skills`). Cursor
 читает и `.agents/skills`, и `.claude/skills`.
 
-MCP — в `~/.cursor/mcp.json` (для всех проектов) или `.cursor/mcp.json` (для проекта):
+MCP настраивается в `~/.cursor/mcp.json` (для всех проектов) или `.cursor/mcp.json`
+(для проекта):
 
 ```json
 {
@@ -186,8 +197,8 @@ looma skill install --agent codex               # ~/.agents/skills
 codex mcp add looma -- looma mcp
 ```
 
-В проект — `looma skill install --agent codex --project` (`.agents/skills`). MCP можно
-описать и вручную в `~/.codex/config.toml` (для проекта — `.codex/config.toml`):
+В проект: `looma skill install --agent codex --project` (`.agents/skills`). MCP можно
+описать и вручную в `~/.codex/config.toml` (для проекта в `.codex/config.toml`):
 
 ```toml
 [mcp_servers.looma]
@@ -204,7 +215,7 @@ looma skill install --agent copilot             # ~/.copilot/skills
 copilot mcp add looma -- looma mcp
 ```
 
-В проект — `looma skill install --agent copilot --project` (`.github/skills`). Вручную —
+В проект: `looma skill install --agent copilot --project` (`.github/skills`). Вручную:
 `~/.copilot/mcp-config.json`:
 
 ```json
@@ -215,7 +226,7 @@ copilot mcp add looma -- looma mcp
 }
 ```
 
-В сессии: `/mcp add` (Server Type — Local, Command — `looma mcp`), проверка —
+В сессии: `/mcp add` (Server Type: Local, Command: `looma mcp`), проверка:
 `/mcp show looma` или `copilot mcp list`.
 
 ### VS Code (GitHub Copilot, режим агента)
@@ -224,7 +235,7 @@ copilot mcp add looma -- looma mcp
 looma skill install --agent copilot --project   # .github/skills
 ```
 
-MCP — файл `.vscode/mcp.json` в проекте:
+MCP настраивается в файле `.vscode/mcp.json` в проекте:
 
 ```json
 {
@@ -234,7 +245,7 @@ MCP — файл `.vscode/mcp.json` в проекте:
 }
 ```
 
-Для всех проектов — палитра команд → «MCP: Add Server» → Global.
+Для всех проектов: палитра команд → «MCP: Add Server» → Global.
 
 ### Gemini CLI
 
@@ -243,7 +254,7 @@ looma skill install --agent gemini              # ~/.gemini/skills
 gemini mcp add -s user looma looma mcp
 ```
 
-Без `-s user` сервер запишется в `.gemini/settings.json` текущего проекта. Вручную —
+Без `-s user` сервер запишется в `.gemini/settings.json` текущего проекта. Вручную:
 `~/.gemini/settings.json`:
 
 ```json
@@ -254,7 +265,7 @@ gemini mcp add -s user looma looma mcp
 }
 ```
 
-Проверка: `gemini mcp list`, в сессии — `/skills`.
+Проверка: `gemini mcp list`, в сессии `/skills`.
 
 ### Claude.ai (веб и приложение)
 
@@ -268,7 +279,7 @@ gemini mcp add -s user looma looma mcp
 
 ### Claude Agent SDK
 
-Папку `looma-kit` (клон репозитория) подключить как локальный плагин: он приносит и
+Папку `looma-kit` (клон репозитория) подключите как локальный плагин: он приносит и
 skills, и MCP-сервер (`looma mcp`, нужен установленный CLI). Инструменты сервера
 плагина называются `mcp__plugin_looma_looma__<инструмент>`.
 
@@ -291,7 +302,7 @@ TypeScript:
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
 for await (const message of query({
-  prompt: "Перенеси этот проект на Looma и выкати на staging",
+  prompt: "Перенеси этот проект на Looma Float и выкати на staging",
   options: {
     cwd: process.cwd(),
     plugins: [{ type: "local", path: "/path/to/looma-kit" }],
@@ -311,8 +322,8 @@ looma skill install --agent agents              # ~/.agents/skills
 looma skill install --agent agents --project    # .agents/skills
 ```
 
-MCP-сервер — команда `looma` с аргументом `mcp` (stdio). Готовые настройки для
-популярных агентов печатает:
+MCP-сервер запускается командой `looma` с аргументом `mcp` (stdio). Готовые настройки
+для популярных агентов печатает:
 
 ```bash
 looma mcp --print-config
@@ -320,15 +331,15 @@ looma mcp --print-config
 
 ### Без CLI: только skill
 
-Skill можно взять и без установки CLI — тогда агент сделает оценку и план, а для
-деплоя попросит поставить CLI:
+Skill можно взять и без установки CLI. Тогда агент сделает оценку и план, а для деплоя
+попросит поставить CLI:
 
 ```bash
 git clone https://github.com/LoomaFloat/looma-kit
 cp -R looma-kit/skills/looma-port looma-kit/skills/looma-apps ~/.agents/skills/
 ```
 
-(вместо `~/.agents/skills` — папка skills вашего агента из таблицы выше).
+Вместо `~/.agents/skills` укажите папку skills вашего агента из таблицы выше.
 
 ---
 
@@ -338,17 +349,17 @@ cp -R looma-kit/skills/looma-port looma-kit/skills/looma-apps ~/.agents/skills/
 
 | Что сказать | Что сделает агент |
 |---|---|
-| «Оцени, можно ли перенести этот проект на Looma» | оценка: что мешает, что переделать, какие модели нужны; без правок |
-| «Перенеси этот проект на Looma и выкати на staging» | оценка → план (ждёт вашего согласия) → правки → проверка манифеста → staging → проверка → отчёт `LOOMA_PORT.md` |
+| «Оцени, можно ли перенести этот проект на Looma Float» | оценка: что мешает, что переделать, какие модели нужны; без правок |
+| «Перенеси этот проект на Looma Float и выкати на staging» | оценка → план (ждёт вашего согласия) → правки → проверка манифеста → staging → проверка → отчёт `LOOMA_PORT.md` |
 | «Проверь staging и покажи логи» | `looma check`, `looma logs` |
-| «Переведи на prod» | `looma promote` — только по такой прямой просьбе |
-| «Опубликуй в маркетплейсе» | `looma publish` — карточка уходит на модерацию |
+| «Переведи на prod» | `looma promote`, только по такой прямой просьбе |
+| «Опубликуй в маркетплейсе» | `looma publish`: карточка с ценами уходит на модерацию |
 
-Агент не переводит на prod, не публикует и не удаляет приложение без прямой просьбы.
+Агент не переводит на prod, не публикует и не удаляет сервис без прямой просьбы.
 Значения секретов он не пишет в файлы и не повторяет: их задаёте вы сами командой
 `looma secrets set ИМЯ=значение`.
 
-Оценку можно запустить и самому — она ничего не ставит и не меняет:
+Оценку можно запустить и самому. Она ничего не ставит и не меняет:
 
 ```bash
 looma assess path/to/project                      # отчёт в терминал
@@ -358,21 +369,24 @@ python3 skills/looma-port/scripts/assess.py path/to/project   # без уста�
 
 ## Команды CLI
 
+В CLI, API и манифесте сервис называется app: флаг `--app`, команда `looma apps`.
+
 | Команда | Что делает |
 |---|---|
 | `looma assess [папка]` | оценка проекта для переноса; ключ не нужен |
 | `looma validate [папка]` | проверка `looma.yaml` и проекта без релиза |
 | `looma models` | модели каталога: имя, тип, отвечает или спит |
-| `looma deploy [папка]` | релиз на staging (`--promote` — сразу на prod) |
-| `looma check [--env staging] [--path /]` | запрос к приложению: код, время, начало ответа |
+| `looma deploy [папка]` | релиз на staging, с `--promote` сразу и на prod |
+| `looma check [--env staging] [--path /]` | запрос к сервису: код, время, начало ответа |
 | `looma status` · `looma logs [процесс] [--env] [-f]` | состояние и логи |
 | `looma promote` · `looma rollback` | staging → prod, откат |
 | `looma secrets set ИМЯ=значение` | секреты процессов |
-| `looma publish` · `looma listing` | карточка в маркетплейсе и её модерация |
+| `looma publish` · `looma listing` | отправить карточку с ценами на модерацию, посмотреть решение |
 | `looma dev` | запуск у себя: база и бакет в Docker, модели настоящие |
 | `looma skill install` · `looma mcp` | skills и MCP-сервер для агентов |
 
-Полный список — `looma --help` и [docs/cli.md](docs/cli.md).
+Полный список: `looma --help` и [docs/cli.md](docs/cli.md). Вызовы моделей из кода
+сервиса описаны в [docs/sdk.md](docs/sdk.md).
 
 ## Инструменты MCP
 
@@ -382,13 +396,26 @@ python3 skills/looma-port/scripts/assess.py path/to/project   # без уста�
 `looma_secrets_list`, `looma_secrets_set`, `looma_stats`, `looma_publish`,
 `looma_listing`, `looma_unpublish`, `looma_destroy`.
 
+Что делает каждый и какое правило сервер даёт агенту: [docs/mcp.md](docs/mcp.md).
+
 ## Что умеет площадка
 
-Хостинг Python, Node.js и любого стека по Dockerfile; веб, фоновые процессы и задачи
-по расписанию; Postgres и S3-бакет; домен с TLS; модели сети Looma по API. Чего нет:
-GPU в процессе, WebSocket, протоколов кроме HTTP, Redis и других баз кроме Postgres,
-выхода наружу на порты кроме 80 и 443. Подробно, с пределами и заменами, —
+Площадка собирает Python, Node.js и любой стек по Dockerfile. Она запускает веб,
+фоновые процессы и задачи по расписанию, даёт Postgres и S3-бакет, адрес с TLS,
+секреты, выход в интернет по HTTP и HTTPS через прокси и модели сети Looma Float по API.
+
+Чего нет: видеокарты в процессе, WebSocket, протоколов кроме HTTP, постоянного диска,
+Redis и других баз кроме Postgres, выхода наружу на порты кроме 80 и 443. Подробно, с
+пределами и заменами:
 [skills/looma-port/references/platform.md](skills/looma-port/references/platform.md).
+
+## Цены и доход
+
+Цены задаёт автор: раздел `events` в `looma.yaml`, поле `price` в рублях. `looma publish`
+отправляет карточку с ценами на модерацию, новая цена действует после одобрения. Доход и
+себестоимость моделей видны в кабинете автора, в разделе «Доход». Выплат пока нет:
+раздел показывает учёт. Подробно:
+[Клиенты и цены](https://docs.loomafloat.ru/authors/prices/).
 
 ## Устройство репозитория
 
@@ -400,7 +427,8 @@ looma-kit/
 │   ├── looma-port/          SKILL.md, references/, scripts/assess.py
 │   └── looma-apps/          SKILL.md
 ├── loomafloat/              CLI, SDK и MCP-сервер (пакет Python)
-├── docs/cli.md              справка по CLI и SDK
+├── docs/                    справка: cli.md, sdk.md, mcp.md
+├── examples/                код четырёх сервисов из каталога
 └── tests/
 ```
 
@@ -414,10 +442,13 @@ claude --plugin-dir .                            # плагин из этой п
 
 Выпуск: поднять версию в `pyproject.toml`, `loomafloat/__init__.py`,
 `.claude-plugin/plugin.json` и `metadata.version` обоих `SKILL.md`, поставить тег
-`vX.Y.Z` — GitHub Actions соберёт `looma-port.zip` и `looma-apps.zip` и приложит их к
+`vX.Y.Z`. GitHub Actions соберёт `looma-port.zip` и `looma-apps.zip` и приложит их к
 релизу. Пользователи плагина получают обновление, когда меняется версия в
 `plugin.json`.
 
+Справку в `docs/` площадка показывает на [docs.loomafloat.ru](https://docs.loomafloat.ru)
+в разделе справки: правьте её здесь.
+
 ## Лицензия
 
-MIT — см. [LICENSE](LICENSE).
+MIT, см. [LICENSE](LICENSE).

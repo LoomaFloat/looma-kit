@@ -34,7 +34,7 @@ class PackError(ValueError):
 
 
 def manifest_name(root: Path) -> Optional[str]:
-    """Имя приложения из `looma.yaml` (`name: …`) без разбора YAML целиком."""
+    """Имя сервиса из `looma.yaml` (`name: …`) без разбора YAML целиком."""
     try:
         found = _NAME.search((root / MANIFEST).read_text(encoding="utf-8"))
     except OSError:
