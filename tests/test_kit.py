@@ -173,6 +173,10 @@ def test_an_old_platform_without_the_check_is_not_an_error(api, capsys, tmp_path
     root = project(tmp_path / "board", {"looma.yaml": GOOD})
     code, out, _ = run(capsys, "validate", str(root))
     assert code == 0 and "ошибки покажет сборка" in out
+    # Старая площадка просит для проверки право manage: это тоже не ошибка.
+    state.manifest_check = "forbidden"
+    code, out, _ = run(capsys, "validate", str(root))
+    assert code == 0 and "ошибки покажет сборка" in out
 
 
 def test_deploy_stops_on_a_bad_manifest_and_shows_warnings(api, capsys, tmp_path, monkeypatch):

@@ -222,9 +222,12 @@ def validate(looma: Optional[Looma], root: Path) -> dict:
         try:
             checked = looma.apps.check_manifest(text)
         except LoomaError as exc:
-            if exc.status == 404:
-                warnings.append("платформа пока не проверяет манифест без релиза: "
-                                "ошибки покажет сборка")
+            # 404: проверки на площадке ещё нет. 403: площадка старой версии
+            # просит для неё полное право manage, которого у ключа из
+            # `looma login` нет. В обоих случаях манифест проверит сборка.
+            if exc.status in (403, 404):
+                warnings.append("площадка не проверила манифест без релиза: ошибки покажет "
+                                "сборка (`looma deploy`)")
             else:
                 raise
     else:

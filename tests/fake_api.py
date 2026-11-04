@@ -119,7 +119,10 @@ def make_handler(state: State):
                                         "data": getattr(state, "models", [{"id": "chat-model"}])})
             if path == "/v1/manifests/check":
                 # Как у платформы: ошибки — все сразу, модели gpu: — против каталога.
-                if not getattr(state, "manifest_check", True):
+                check = getattr(state, "manifest_check", True)
+                if check == "forbidden":
+                    return self._error(403, "у ключа нет права manage")
+                if not check:
                     return self._error(404, "нет такого пути")
                 text = json.loads(body)["manifest"]
                 state.checked = getattr(state, "checked", []) + [text]
