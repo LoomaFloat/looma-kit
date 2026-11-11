@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import re
 import shutil
@@ -249,6 +250,203 @@ CHANNEL_NAMES = {"web": "веб", "api": "API", "mcp": "MCP", "telegram": "Teleg
 
 def rubles(kopecks) -> str:
     return "—" if kopecks is None else f"{kopecks / 100:,.2f} ₽".replace(",", " ").replace(".", ",")
+
+
+# ------------------------------------------------- свои модели в каталоге
+ENTRY_STATES = {"ready": "отвечает", "starting": "поднимается", "cold": "спит",
+                "unavailable": "не отвечает"}
+#: Единицы цены модели: имя в CLI → поле API (копейки).
+PRICE_UNITS = {"in": "price_in", "out": "price_out", "image": "price_image",
+               "second": "price_second"}
+_UNIT_TITLES = {"price_in": "вход", "price_out": "выход", "price_image": "за изображение",
+                "price_second": "за секунду видео"}
+
+
+class EntryError(OpError):
+    """Команду о своей модели не выполнить: причина словами."""
+
+
+def entry_form(entry: dict) -> str:
+    """Вид записи: настройка поверх модели, модель с адаптером или свои веса."""
+    if entry.get("form") == "light":
+        return "настройка"
+    recipe = entry.get("recipe") or {}
+    if "/" in str(recipe.get("engine") or ""):
+        return "движок"                 # запись на движке автора
+    return "адаптер" if recipe.get("adapter") else "веса"
+
+
+def entry_publication(entry: dict) -> str:
+    if entry.get("visibility") == "public":
+        return "опубликована"
+    return {"pending": "на проверке", "rejected": "отклонена"}.get(entry.get("review") or "",
+                                                                    "видите только вы")
+
+
+def entry_price(entry: dict) -> str:
+    """Цена словами; у настройки это надбавка к цене её основы."""
+    price = entry.get("price") or {}
+    parts = [f"{_UNIT_TITLES[unit]} {rubles(price[unit])}" for unit in _UNIT_TITLES
+             if price.get(unit)]
+    if not parts:
+        return "без надбавки" if entry.get("form") == "light" else "бесплатно"
+    tokens = " за 1M токенов" if price.get("price_in") or price.get("price_out") else ""
+    return ("надбавка: " if entry.get("form") == "light" else "") + ", ".join(parts) + tokens
+
+
+def entry_row(entry: dict) -> dict:
+    """Запись коротко — для списка и для ИИ-агента."""
+    row = {"id": entry["id"], "name": entry["label"], "form": entry_form(entry),
+           "kind": (entry.get("passport") or {}).get("kind") or "text",
+           "status": entry.get("status"), "publication": entry_publication(entry),
+           "price": entry.get("price") or {}, "summary": entry.get("summary") or ""}
+    if entry.get("form") == "light":
+        row["base"] = entry.get("base")
+    else:
+        row["repo"] = (entry.get("recipe") or {}).get("repo")
+        engine = str((entry.get("recipe") or {}).get("engine") or "")
+        if "/" in engine:
+            row["engine"] = engine
+            row["engine_version"] = (entry.get("recipe") or {}).get("engine_version")
+        row["replicas"] = {"min": entry.get("min_replicas"), "max": entry.get("max_replicas"),
+                           "running": len(entry.get("replicas") or [])}
+    for name in ("note", "review_note"):
+        if entry.get(name):
+            row[name] = entry[name]
+    return row
+
+
+def price_of(pairs) -> dict:
+    """`in=5 out=12.5` (рубли) → цена для API в копейках. Ноль единицу убирает."""
+    price = {}
+    for pair in pairs or []:
+        unit, sep, value = str(pair).partition("=")
+        if not sep or unit.strip() not in PRICE_UNITS:
+            raise EntryError(f"{pair!r}: цена задаётся как единица=рубли; единицы: "
+                             f"{', '.join(PRICE_UNITS)}")
+        try:
+            kopecks = round(float(value.replace(",", ".")) * 100)
+        except ValueError:
+            raise EntryError(f"{pair!r}: рубли — число, например out=12.5") from None
+        if kopecks < 0:
+            raise EntryError(f"{pair!r}: цена не бывает отрицательной")
+        if kopecks:
+            price[PRICE_UNITS[unit.strip()]] = kopecks
+    return price
+
+
+def recipe_of(pairs) -> dict:
+    """`stages=2 dtype=bfloat16` → поля рецепта движка. Числа и да/нет читаются
+    по виду, остальное идёт строкой."""
+    recipe = {}
+    for pair in pairs or []:
+        key, sep, value = str(pair).partition("=")
+        if not sep or not key.strip():
+            raise EntryError(f"{pair!r}: параметр движка задаётся как имя=значение")
+        value = value.strip()
+        recipe[key.strip()] = (True if value.lower() == "true" else False
+                               if value.lower() == "false" else int(value)
+                               if re.fullmatch(r"-?\d+", value) else value)
+    return recipe
+
+
+def read_preset(path: Path) -> dict:
+    """Настройка из файла JSON: `system`, `template`, `inputs`, `params` у
+    текстовой модели; `prompt`, `inputs`, `params` у изображений и видео."""
+    try:
+        preset = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise EntryError(f"файл настройки {path} не прочитать: {exc.strerror or exc}") from None
+    except ValueError as exc:
+        raise EntryError(f"файл настройки {path} не JSON: {exc}") from None
+    if not isinstance(preset, dict):
+        raise EntryError(f"файл настройки {path}: нужен JSON-объект")
+    return preset
+
+
+def entry_payload(*, name: str, repo: str = "", engine: str = "", recipe: Optional[dict] = None,
+                  base: str = "", adapter: str = "", preset: Optional[dict] = None,
+                  summary: str = "", always: bool = False) -> dict:
+    """Тело запроса на новую запись: одно из трёх — свои веса (`repo`), модель
+    каталога с адаптером (`base` и `adapter`), настройка (`base` и `preset`)."""
+    if not name:
+        raise EntryError("как назвать модель? Имя: латиница, цифры, точка, дефис")
+    # Движок автора (`автор/движок`) может работать и без весов.
+    authored = "/" in engine and not base
+    chosen = [bool(repo) or authored, bool(base and adapter),
+              bool(base and preset is not None)]
+    if sum(chosen) != 1 or (base and repo):
+        raise EntryError("что добавить? Одно из трёх: --repo владелец/модель (свои веса), "
+                         "--base модель --adapter адаптер, --base модель --preset файл.json")
+    payload = {"name": name}
+    if summary:
+        payload["summary"] = summary
+    if preset is not None and base:
+        if always or recipe or engine:
+            raise EntryError("у настройки нет своих реплик и движка: она работает на репликах "
+                             f"{base}")
+        return {**payload, "base": base, "preset": preset}
+    payload.update(min_replicas=1 if always else 0, max_replicas=1)
+    if base:
+        return {**payload, "base": base, "adapter": adapter}
+    return {**payload, **(recipe or {}), **({"repo": repo} if repo else {}),
+            **({"engine": engine} if engine else {})}
+
+
+# --------------------------------------------------------------- движки
+LAYER_KINDS = {"engine": "движок", "extension": "расширение"}
+LAYER_STATES = {"pending": "ждёт проверки", "approved": "одобрена", "rejected": "отклонена",
+                "draft": "черновик"}
+
+
+def layer_lines(layer: dict) -> list:
+    """Движок или расширение автора с версиями — строками для человека."""
+    head = f"{layer['ref']}: {LAYER_KINDS.get(layer['kind'], layer['kind'])}"
+    if layer.get("title"):
+        head += f", «{layer['title']}»"
+    head += ", открыт авторам" if layer.get("public") else ", виден только вам"
+    lines = [head]
+    for version in layer.get("versions") or []:
+        source = version.get("source") or {}
+        line = (f"  версия {version['number']}: "
+                f"{LAYER_STATES.get(version['status'], version['status'])}, "
+                f"коммит {str(source.get('commit') or '')[:12]}")
+        if version.get("extends"):
+            line += f", для движка {version['extends']}"
+        lines.append(line)
+        if version.get("note"):
+            lines.append(f"    ревью: {version['note']}")
+    return lines
+
+
+def find_layer(looma: Looma, name: str) -> dict:
+    doc = looma.engines.mine()
+    wanted = {name, f"{doc.get('handle') or ''}/{name}"}
+    found = next((layer for layer in doc["layers"] if layer["ref"] in wanted), None)
+    if found is None:
+        raise EntryError(f"движка или расширения {name!r} у вас нет: `looma engine list` "
+                         "покажет свои")
+    return found
+
+
+def find_entry(looma: Looma, name: str) -> dict:
+    entry = looma.entries.find(name)
+    if entry is None:
+        raise EntryError(f"модели {name!r} у вас нет: `looma model list` покажет свои")
+    return entry
+
+
+def add_entry(looma: Looma, payload: dict, handle: str = "") -> dict:
+    """Завести запись. Имя автора задаётся один раз, перед первой записью."""
+    known = looma.entries.mine().get("handle") or ""
+    if handle and known and handle != known:
+        raise EntryError(f"имя автора уже задано: {known}. Оно не меняется")
+    if not known:
+        if not handle:
+            raise EntryError("сначала задайте имя автора, с него начинаются имена ваших "
+                             "моделей: `looma model name <имя>`")
+        looma.entries.set_handle(handle)
+    return looma.entries.create(payload)
 
 
 def stats_lines(doc: dict) -> list:

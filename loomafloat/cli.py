@@ -10,6 +10,8 @@
     looma rollback                 prod — на прошлый релиз
     looma secrets set KEY=VALUE    секреты процессов
     looma publish                  карточку и цены — в маркетплейс (через модерацию)
+    looma model add …              своя модель в каталоге: веса, адаптер или настройка
+    looma engine submit …          свой движок: версия из репозитория на ревью площадки
     looma stats                    запросы, клиенты, события, себестоимость
 
 Сервис (app) берётся из `--app`, иначе по имени из `looma.yaml` текущей папки.
@@ -218,6 +220,185 @@ def cmd_models(args) -> None:
         vector = f" · вектор {m['dimensions']}" if m.get("dimensions") else ""
         say(f"{m['id']:<{width}}  {m.get('kind') or 'text':<9} {state}{context}{vector}")
     say("в манифест — по имени: gpu: { шаг: { model: <имя> } }")
+
+
+def _model_lines(entry: dict) -> list:
+    """Своя модель подробно — строками для человека."""
+    row = ops.entry_row(entry)
+    lines = [f"{row['name']}: {row['form']}, {row['kind']}, "
+             f"{ops.ENTRY_STATES.get(row['status'], row['status'])}, {row['publication']}"]
+    if row.get("summary"):
+        lines.append(f"  описание: {row['summary']}")
+    if entry.get("form") == "light":
+        lines.append(f"  работает на: {row['base']} (своих реплик нет)")
+    else:
+        if row.get("engine"):
+            lines.append(f"  движок: {row['engine']}, версия {row.get('engine_version')}")
+        if row.get("repo"):
+            lines.append(f"  веса: {row['repo']}")
+        if (entry.get("recipe") or {}).get("adapter"):
+            lines.append(f"  адаптер: {entry['recipe']['adapter']}")
+        replicas = row["replicas"]
+        lines.append(f"  реплики: работает {replicas['running']}, держать всегда "
+                     f"{replicas['min']}")
+    lines.append(f"  цена: {ops.entry_price(entry)}")
+    if row.get("note"):
+        lines.append(f"  внимание: {row['note']}")
+    if row.get("review_note"):
+        lines.append(f"  отклонена: {row['review_note']}")
+    return lines
+
+
+def cmd_engine(args) -> None:
+    looma = _looma(args)
+    action, name = args.action, args.name
+    try:
+        if action == "list":
+            doc = looma.engines.mine()
+            if not doc["layers"]:
+                say("своих движков нет: `looma engine submit --repo https://github.com/вы/"
+                    "репозиторий --commit <коммит>`")
+                return
+            for layer in doc["layers"]:
+                for line in ops.layer_lines(layer):
+                    say(line)
+        elif action == "submit":
+            if not args.repo or not args.commit:
+                raise Stop("откуда собрать? looma engine submit --repo https://github.com/вы/"
+                           "репозиторий --commit <коммит целиком> [--path папка]")
+            if not looma.engines.mine().get("handle"):
+                raise Stop("сначала задайте имя автора, с него начинаются имена движков: "
+                           "`looma model name <имя>`")
+            made = looma.engines.submit(repo=args.repo, commit=args.commit,
+                                        path=args.path or "",
+                                        kind="extension" if args.extension else "engine")
+            for line in ops.layer_lines(made):
+                say(line)
+            say(f"версия {made.get('submitted')} ждёт проверки площадки. Одобренную версию "
+                f"берут в модель: `looma model add <имя> --engine {made['ref']}`")
+        elif action in ("show", "open", "close"):
+            if not name:
+                raise Stop(f"какой движок? looma engine {action} <имя>")
+            layer = ops.find_layer(looma, name)
+            if action != "show":
+                layer = looma.engines.share(layer["ref"], action == "open")
+                say("открыт: другие авторы собирают на нём свои модели" if action == "open"
+                    else "закрыт: виден только вам")
+            for line in ops.layer_lines(layer):
+                say(line)
+    except ops.OpError as exc:
+        raise Stop(str(exc)) from None
+    except LoomaError as exc:
+        raise Stop(str(exc)) from None
+
+
+def cmd_model(args) -> None:
+    looma = _looma(args)
+    action, name = args.action, args.name
+    try:
+        if action == "list":
+            doc = looma.entries.mine()
+            if not doc["services"]:
+                say("своих моделей нет: `looma model add <имя> --repo владелец/модель`")
+                return
+            width = max(len(e["label"]) for e in doc["services"])
+            for entry in doc["services"]:
+                row = ops.entry_row(entry)
+                over = f" · поверх {row['base']}" if row.get("base") else ""
+                say(f"{row['name']:<{width}}  {row['form']:<9} {row['kind']:<9} "
+                    f"{ops.ENTRY_STATES.get(row['status'], row['status']):<11} "
+                    f"{row['publication']:<16} {ops.entry_price(entry)}{over}")
+        elif action == "name":
+            known = looma.entries.mine().get("handle") or ""
+            if not name:
+                say(f"имя автора: {known}" if known else
+                    "имя автора не задано: `looma model name <имя>`. С него начинаются имена "
+                    "моделей, задаётся один раз")
+            elif known:
+                raise Stop(f"имя автора уже задано: {known}. Оно не меняется")
+            else:
+                looma.entries.set_handle(name)
+                say(f"имя автора: {name}. Модели будут зваться {name}/<имя>")
+        elif action == "adapters":
+            rows = looma.entries.adapters()
+            if not rows:
+                say("адаптеров нет: адаптер появляется после обучения или загружается файлами")
+            for a in rows:
+                say(f"{a['name']:<24} обучен на {a['base_model']}")
+        elif action == "check":
+            if not args.repo and "/" not in (args.engine or ""):
+                raise Stop("что проверить? looma model check --repo владелец/модель")
+            found = looma.entries.check({**({"repo": args.repo} if args.repo else {}),
+                                         **({"engine": args.engine} if args.engine else {}),
+                                         **ops.recipe_of(args.set)})
+            weights = found.get("weights")
+            if weights:
+                say(f"веса проходят: safetensors, "
+                    f"{weights.get('weights_bytes', 0) / 2**30:.1f} ГиБ, своего кода модели нет")
+            if found.get("fits"):
+                stages = found.get("stages") or 1
+                say("модель встанет в сети: " + (f"по частям на {stages} узлах" if stages > 1
+                                                 else "целиком на одном узле"))
+            else:
+                say(f"сейчас модель поставить некуда: {found.get('error')}")
+        elif action == "add":
+            preset = ops.read_preset(args.preset) if args.preset else None
+            payload = ops.entry_payload(
+                name=name or "", repo=args.repo or "", engine=args.engine or "",
+                recipe=ops.recipe_of(args.set), base=args.base or "", adapter=args.adapter or "",
+                preset=preset, summary=args.summary or "", always=args.always)
+            made = ops.add_entry(looma, payload)
+            for line in _model_lines(made):
+                say(line)
+            say(f"вызвать: gpu: {{ шаг: {{ model: {made['label']} }} }}; сейчас модель видите "
+                f"только вы, для всех: `looma model publish {made['label']}`")
+        elif action in ("show", "set", "publish", "unpublish", "delete"):
+            if not name:
+                raise Stop(f"какая модель? looma model {action} <имя>")
+            entry = ops.find_entry(looma, name)
+            if action == "set":
+                changes = {}
+                if args.summary is not None:
+                    changes["summary"] = args.summary
+                if args.free:
+                    changes["price"] = {}
+                elif args.price:
+                    changes["price"] = ops.price_of(args.price)
+                if args.preset:
+                    changes["preset"] = ops.read_preset(args.preset)
+                if args.always:
+                    changes.update(min_replicas=1, max_replicas=max(1, entry["max_replicas"]))
+                elif args.sleep:
+                    changes["min_replicas"] = 0
+                if not changes:
+                    raise Stop("что поменять? --summary, --price, --free, --preset, --always "
+                               "или --sleep")
+                entry = looma.entries.update(entry["id"], changes)
+            elif action == "publish":
+                entry = looma.entries.publish(entry["id"])
+                say("отправлена на проверку площадки; до одобрения её зовёте только вы"
+                    if entry.get("visibility") != "public" else "уже опубликована")
+            elif action == "unpublish":
+                entry = looma.entries.unpublish(entry["id"])
+                say("снята с публикации: зовёте только вы")
+            elif action == "delete":
+                if not args.yes:
+                    raise Stop(f"удаление {entry['label']} необратимо: сервисы, которые её "
+                               "зовут, начнут получать отказ. Подтвердите флагом --yes")
+                gone = looma.entries.delete(entry["id"])
+                say(f"{entry['label']} удалена" + (
+                    f"; настроек, которые на ней работали: {gone['dependents']}"
+                    if gone.get("dependents") else ""))
+                return
+            for line in _model_lines(entry):
+                say(line)
+            if action == "show" and entry.get("form") == "light":
+                say("  настройка:")
+                for line in json.dumps(entry.get("preset") or {}, ensure_ascii=False,
+                                       indent=2).splitlines():
+                    say("    " + line)
+    except ops.OpError as exc:
+        raise Stop(str(exc)) from None
 
 
 def cmd_skill(args) -> None:
@@ -597,6 +778,48 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("dir", nargs="?", default=".", help="папка с looma.yaml (по умолчанию — текущая)")
 
     command("models", cmd_models, "модели каталога: имя, тип, отвечает или спит")
+
+    p = command("model", cmd_model, "свои модели в каталоге: веса, адаптер, настройка поверх "
+                                    "модели")
+    p.add_argument("action", nargs="?", default="list",
+                   choices=("list", "add", "check", "show", "set", "publish", "unpublish",
+                            "delete", "name", "adapters"),
+                   help="list — свои модели (по умолчанию); add — добавить; check — проверить "
+                        "веса без запуска; show — подробно; set — описание, цена, настройка, "
+                        "реплики; publish и unpublish — публикация; delete — удалить; name — "
+                        "имя автора; adapters — адаптеры LoRA проекта")
+    p.add_argument("name", nargs="?", help="имя модели (у name — имя автора)")
+    p.add_argument("--repo", help="add, check: репозиторий весов на HuggingFace")
+    p.add_argument("--engine", help="add, check: движок (по умолчанию torch)")
+    p.add_argument("--set", action="append", metavar="имя=значение",
+                   help="add, check: параметр движка, можно несколько раз (stages=2)")
+    p.add_argument("--base", help="add: модель каталога, поверх которой заводится запись")
+    p.add_argument("--adapter", help="add: адаптер LoRA (с --base): имя или номер")
+    p.add_argument("--preset", metavar="файл.json",
+                   help="add (с --base), set: настройка: system, template, inputs, params")
+    p.add_argument("--summary", help="add, set: одна строка о модели")
+    p.add_argument("--price", action="append", metavar="единица=рубли",
+                   help="set: цена, можно несколько раз: in и out за 1M токенов, image за "
+                        "изображение, second за секунду видео")
+    p.add_argument("--free", action="store_true", help="set: убрать цену")
+    p.add_argument("--always", action="store_true",
+                   help="add, set: держать одну реплику всегда (время карт идёт в расходы)")
+    p.add_argument("--sleep", action="store_true",
+                   help="set: разрешить модели засыпать без запросов")
+    p.add_argument("--yes", action="store_true", help="delete: подтвердить удаление")
+
+    p = command("engine", cmd_engine, "свои движки и расширения: подать на ревью, открыть "
+                                      "авторам")
+    p.add_argument("action", nargs="?", default="list",
+                   choices=("list", "submit", "show", "open", "close"),
+                   help="list — свои движки (по умолчанию); submit — подать версию на ревью; "
+                        "show — подробно; open — открыть другим авторам; close — закрыть")
+    p.add_argument("name", nargs="?", help="имя движка или расширения")
+    p.add_argument("--repo", help="submit: открытый репозиторий на GitHub")
+    p.add_argument("--commit", help="submit: коммит целиком, 40 знаков")
+    p.add_argument("--path", help="submit: папка с looma-engine.yaml, если он не в корне")
+    p.add_argument("--extension", action="store_true",
+                   help="submit: это расширение движка (looma-extension.yaml)")
 
     p = command("check", cmd_check, "запрос к вебу сервиса: код, время, начало ответа",
                 app=True)

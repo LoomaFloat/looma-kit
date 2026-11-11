@@ -123,6 +123,8 @@ class Looma:
         #: Клиент маркетплейса, для которого делаются вызовы моделей.
         self.client = client
         self.apps = Apps(self)
+        self.entries = Entries(self)
+        self.engines = Engines(self)
 
     def for_client(self, client: Optional[str]) -> "Looma":
         """Те же ключ и адрес, вызовы моделей — для клиента `client`."""
@@ -160,20 +162,30 @@ class Looma:
     def models(self) -> List[dict]:
         return get_json(self.url("/v1/models"), key=self.key)["data"]
 
-    def chat(self, model: str, messages: Union[str, Iterable[dict]], **params) -> str:
+    @staticmethod
+    def _chat_body(model: str, messages, params: dict) -> dict:
+        body = {"model": model, **params}
+        if messages is not None:
+            if isinstance(messages, str):
+                messages = [{"role": "user", "content": messages}]
+            body["messages"] = list(messages)
+        return body
+
+    def chat(self, model: str, messages: Union[str, Iterable[dict], None] = None,
+             **params) -> str:
         """Ответ модели текстом. `messages` — строка (одно сообщение
         пользователя) или список в формате OpenAI; прочее — как в OpenAI
-        (`temperature`, `max_tokens`, …)."""
+        (`temperature`, `max_tokens`, …).
+
+        Настройку автора со своим входом зовут полями вместо сообщений:
+        `looma.chat("anna/translate", input={"text": "…"})`."""
         return self.chat_raw(model, messages, **params)["choices"][0]["message"]["content"]
 
-    def chat_stream(self, model: str, messages: Union[str, Iterable[dict]],
+    def chat_stream(self, model: str, messages: Union[str, Iterable[dict], None] = None,
                     **params) -> Iterator[str]:
         """Ответ кусками по мере генерации — для чатов, где текст печатается
         на глазах."""
-        if isinstance(messages, str):
-            messages = [{"role": "user", "content": messages}]
-        body = json.dumps({"model": model, "messages": list(messages), "stream": True,
-                           **params}).encode()
+        body = json.dumps({**self._chat_body(model, messages, params), "stream": True}).encode()
         answer = open_stream("POST", self.url("/v1/chat/completions"), key=self.key, body=body,
                              headers={"Content-Type": "application/json", **self._headers()},
                              timeout=CALL_TIMEOUT_S)
@@ -198,17 +210,18 @@ class Looma:
                     if piece:
                         yield piece
 
-    def chat_raw(self, model: str, messages: Union[str, Iterable[dict]], **params) -> dict:
-        if isinstance(messages, str):
-            messages = [{"role": "user", "content": messages}]
+    def chat_raw(self, model: str, messages: Union[str, Iterable[dict], None] = None,
+                 **params) -> dict:
         return send_json("POST", self.url("/v1/chat/completions"),
-                         {"model": model, "messages": list(messages), **params},
+                         self._chat_body(model, messages, params),
                          key=self.key, timeout=CALL_TIMEOUT_S, headers=self._headers())
 
-    def image(self, model: str, prompt: str, *, images: Optional[Iterable[ImageInput]] = None,
+    def image(self, model: str, prompt: str = "", *,
+              images: Optional[Iterable[ImageInput]] = None,
               n: int = 1, size: Optional[str] = None, **params) -> List[bytes]:
         """Изображения PNG байтами. С `images` (файлы, байты, ссылки) — правка по
-        ним. Поля движка (`seed`, `num_inference_steps`, …) — как есть."""
+        ним. Поля движка (`seed`, `num_inference_steps`, …) — как есть. Настройке
+        автора со своим входом вместо промпта шлют `input={…}`."""
         body = {"model": model, "prompt": prompt, "n": n, "response_format": "b64_json",
                 **params}
         if size:
@@ -255,10 +268,11 @@ class Looma:
                            timeout=CALL_TIMEOUT_S, headers=self._headers())
         return answer["results"]
 
-    def video(self, model: str, prompt: str, *, seconds: float = 5, wait: bool = False,
+    def video(self, model: str, prompt: str = "", *, seconds: float = 5, wait: bool = False,
               **params) -> Video:
         """Задание на видео; `wait=True` — дождаться. Поля — как у
-        `POST /v1/videos` (`quality`, `size`, `seed`, `conditions`, …)."""
+        `POST /v1/videos` (`quality`, `size`, `seed`, `conditions`, …). Настройке
+        автора со своим входом шлют `input={…}`."""
         doc = send_json("POST", self.url("/v1/videos"),
                         {"model": model, "prompt": prompt, "seconds": seconds, **params},
                         key=self.key, headers=self._headers())
@@ -417,4 +431,105 @@ class Apps:
         return json.loads(body) if body else {}
 
 
-__all__ = ["Apps", "Looma", "Video", "client_of"]
+class Entries:
+    """Свои модели автора в каталоге — то, на чём стоят `looma model` и MCP.
+
+    Запись бывает трёх видов: свои веса на движке площадки (`repo`), модель
+    каталога с адаптером LoRA (`base` и `adapter`) и настройка поверх модели
+    каталога (`base` и `preset`: системный промпт, параметры, свой вход)."""
+
+    def __init__(self, looma: Looma) -> None:
+        self.looma = looma
+
+    def _url(self, *parts) -> str:
+        return self.looma.url("/api/services" + "".join(f"/{_q(str(p))}" for p in parts))
+
+    def _send(self, method: str, url: str, payload=None) -> dict:
+        return send_json(method, url, payload, key=self.looma.key)
+
+    def mine(self) -> dict:
+        """`{"services": […], "handle": имя автора}`."""
+        return get_json(self._url(), key=self.looma.key)
+
+    def list(self) -> List[dict]:
+        return self.mine()["services"]
+
+    def find(self, name: str) -> Optional[dict]:
+        """Запись по полному имени `автор/модель`, по имени без автора или по номеру."""
+        doc = self.mine()
+        wanted = {name, f"{doc.get('handle') or ''}/{name}"}
+        return next((e for e in doc["services"]
+                     if e["label"] in wanted or str(e["id"]) == str(name)), None)
+
+    def create(self, payload: dict) -> dict:
+        return self._send("POST", self._url(), payload)
+
+    def update(self, entry_id, payload: dict) -> dict:
+        """Цена (`price`, копейки), описание (`summary`), настройка (`preset`),
+        пределы реплик (`min_replicas`, `max_replicas`)."""
+        return self._send("PATCH", self._url(entry_id), payload)
+
+    def publish(self, entry_id) -> dict:
+        """Подать на публикацию: после проверки площадки запись зовут все."""
+        return self._send("POST", self._url(entry_id, "publish"))
+
+    def unpublish(self, entry_id) -> dict:
+        return self._send("POST", self._url(entry_id, "unpublish"))
+
+    def delete(self, entry_id) -> dict:
+        _s, _h, body = request("DELETE", self._url(entry_id), key=self.looma.key)
+        return json.loads(body) if body else {}
+
+    def check(self, payload: dict) -> dict:
+        """Проверить веса без запуска: формат, размер, встанет ли модель в сети."""
+        return self._send("POST", self.looma.url("/api/models/check"), payload)
+
+    def engines(self) -> dict:
+        """Движки площадки и поля их рецептов."""
+        return get_json(self.looma.url("/api/engines"), key=self.looma.key)
+
+    def set_handle(self, handle: str) -> dict:
+        """Имя автора: с него начинаются имена его моделей. Задаётся один раз."""
+        return self._send("PATCH", self.looma.url("/api/me"), {"handle": handle})
+
+    def adapters(self) -> List[dict]:
+        """Адаптеры LoRA проекта: из обучения и загруженные."""
+        return get_json(self.looma.url("/v1/adapters"), key=self.looma.key)["data"]
+
+
+class Engines:
+    """Свои движки и расширения автора — то, на чём стоит `looma engine`.
+
+    Движок публикуют из открытого репозитория на GitHub: репозиторий, коммит
+    целиком и папка с `looma-engine.yaml`. Версия уходит на ревью площадки;
+    после одобрения на движке можно собирать модели (`looma model add
+    --engine автор/движок`)."""
+
+    def __init__(self, looma: Looma) -> None:
+        self.looma = looma
+
+    def _url(self, *parts) -> str:
+        return self.looma.url("/api/layers" + "".join(f"/{_q(str(p))}" for p in parts))
+
+    def mine(self) -> dict:
+        """`{"layers": […], "handle": имя автора}`."""
+        return get_json(self._url(), key=self.looma.key)
+
+    def list(self) -> List[dict]:
+        return self.mine()["layers"]
+
+    def submit(self, *, repo: str, commit: str, path: str = "", kind: str = "engine") -> dict:
+        """Подать версию на ревью. То же содержимое второй раз — прежняя версия."""
+        payload = {"repo": repo, "commit": commit, "kind": kind}
+        if path:
+            payload["path"] = path
+        return send_json("POST", self._url(), payload, key=self.looma.key)
+
+    def share(self, ref: str, public: bool) -> dict:
+        """Открыть слой другим авторам или закрыть. `ref` — `автор/слой`."""
+        author, _, name = ref.partition("/")
+        return send_json("PATCH", self._url(author, name), {"public": bool(public)},
+                         key=self.looma.key)
+
+
+__all__ = ["Apps", "Engines", "Entries", "Looma", "Video", "client_of"]

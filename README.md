@@ -13,7 +13,7 @@
 | skill **`looma-port`** | перенос проекта: оценка → план → переделка → деплой → проверка → отчёт |
 | skill **`looma-apps`** | работа с сервисом на Looma Float: деплой, логи, откат, секреты, модели, статистика, публикация |
 | CLI **`looma`** | все действия из терминала; на нём работают оба skill. Справка: [docs/cli.md](docs/cli.md) |
-| MCP-сервер **`looma mcp`** | те же действия в виде 22 инструментов для агента. Справка: [docs/mcp.md](docs/mcp.md) |
+| MCP-сервер **`looma mcp`** | те же действия в виде 29 инструментов для агента. Справка: [docs/mcp.md](docs/mcp.md) |
 | SDK **`loomafloat`** | вызовы моделей Looma Float из кода на Python, без зависимостей. Справка: [docs/sdk.md](docs/sdk.md) |
 | примеры **`examples/`** | код четырёх сервисов из каталога: ассистент, студия изображений, видеостудия, раскадровка. Список: [examples/README.md](examples/README.md) |
 
@@ -376,6 +376,8 @@ python3 skills/looma-port/scripts/assess.py path/to/project   # без уста�
 | `looma assess [папка]` | оценка проекта для переноса; ключ не нужен |
 | `looma validate [папка]` | проверка `looma.yaml` и проекта без релиза |
 | `looma models` | модели каталога: имя, тип, отвечает или спит |
+| `looma model …` | свои модели в каталоге: веса, адаптер, настройка; [Свои модели](docs/own-models.md) |
+| `looma engine …` | свои движки и расширения: версия из репозитория на ревью площадки; [Свой движок](docs/engines.md) |
 | `looma deploy [папка]` | релиз на staging, с `--promote` сразу и на prod |
 | `looma check [--env staging] [--path /]` | запрос к сервису: код, время, начало ответа |
 | `looma status` · `looma logs [процесс] [--env] [-f]` | состояние и логи |

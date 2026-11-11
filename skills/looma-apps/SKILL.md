@@ -4,7 +4,7 @@ description: Сервисы на площадке Looma Float. Деплой, sta
 license: MIT
 compatibility: Нужны CLI looma (github.com/LoomaFloat/looma-kit) и вход `looma login`; MCP-сервер `looma mcp` по желанию.
 metadata:
-  version: "0.3.1"
+  version: "0.4.0"
   homepage: "https://github.com/LoomaFloat/looma-kit"
 ---
 
@@ -76,6 +76,10 @@ listing:                               # карточка в каталоге
 - Сервис вызывает модели своим токеном через OpenAI-совместимый API, и только те, что
   в `gpu:`, иначе 403. В Python: `from loomafloat import Looma; Looma().chat(...)`.
   Какие модели есть и спят ли они, показывает `looma models` (`looma_models`).
+- Свою модель в каталог добавляют, только когда моделей сети не хватает и пользователь
+  просит об этом: `looma model` (`looma_model_*`). Начинать с настройки поверх модели
+  сети (системный промпт, поля входа): ей не нужны свои видеокарты. Свои веса и адаптер
+  держат свои реплики, их время идёт автору в расходы. Справка: docs/own-models.md.
 
 ## Маркетплейс
 

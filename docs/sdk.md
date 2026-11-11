@@ -41,13 +41,13 @@ mp4 = looma.video("MiniMax-H3", "A red fox in a snowy forest", quality="fast").c
 
 | Метод | Что делает |
 |---|---|
-| `chat(model, messages, **params)` | ответ модели текстом. `messages` бывает строкой (одно сообщение пользователя) или списком сообщений в формате OpenAI. Остальные параметры как в OpenAI: `temperature`, `max_tokens` и другие |
+| `chat(model, messages=None, **params)` | ответ модели текстом. `messages` бывает строкой (одно сообщение пользователя) или списком сообщений в формате OpenAI. Остальные параметры как в OpenAI: `temperature`, `max_tokens` и другие. [Настройку автора](own-models.md#call) с полями входа вызывают без сообщений: `chat("anna/contract-translator", input={"text": "…"})` |
 | `chat_stream(model, messages, **params)` | ответ кусками по мере генерации, для чатов, где текст печатается на глазах |
 | `chat_raw(model, messages, **params)` | ответ целиком, как его отдаёт API |
-| `image(model, prompt, *, images=None, n=1, size=None, **params)` | список изображений PNG байтами. С `images` (файлы, байты, ссылки) правка по ним. Поля движка, например `seed` и `num_inference_steps`, передаются как есть |
+| `image(model, prompt="", *, images=None, n=1, size=None, **params)` | список изображений PNG байтами. С `images` (файлы, байты, ссылки) правка по ним. Поля движка, например `seed` и `num_inference_steps`, передаются как есть |
 | `embed(model, texts, *, input_type=None, dimensions=None)` | векторы текстов по порядку; строка даёт список из одного вектора. `input_type`: `query` для поиска, `document` для индексации; префиксы моделей e5 и Qwen3 подставляет сервер. `dimensions` укорачивает вектор у моделей с Matryoshka |
 | `rerank(model, query, documents, *, top_n=None)` | документы по убыванию оценки: список `{"index", "relevance_score"}`, где `index` указывает в `documents`; `top_n` оставляет столько лучших |
-| `video(model, prompt, *, seconds=5, wait=False, **params)` | задание на видео; с `wait=True` дождаться готового ролика. Поля как у `POST /v1/videos`: `quality`, `size`, `seed`, `conditions` и другие |
+| `video(model, prompt="", *, seconds=5, wait=False, **params)` | задание на видео; с `wait=True` дождаться готового ролика. Поля как у `POST /v1/videos`: `quality`, `size`, `seed`, `conditions` и другие |
 | `models()` | модели каталога |
 | `for_client(client)` | копия `Looma` с тем же ключом и адресом; её вызовы моделей записываются на клиента каталога |
 | `charge(event, client=None, *, quantity=1, id=None)` | отметить событие из раздела `events` для клиента |

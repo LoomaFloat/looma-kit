@@ -135,6 +135,57 @@ def test_agent_path_init_deploy_check_promote(session):
     assert not error and state.app("bot") is None
 
 
+def test_agent_adds_prices_and_publishes_an_own_model(session):
+    s, state, _tmp = session
+    s.request("initialize", {"protocolVersion": "2025-03-26"})
+    tools = {t["name"]: t for t in s.request("tools/list")["result"]["tools"]}
+    assert {"looma_model_list", "looma_model_check", "looma_model_add", "looma_model_set",
+            "looma_model_publish", "looma_model_unpublish", "looma_model_delete"} <= set(tools)
+    assert tools["looma_model_delete"]["inputSchema"]["required"] == ["name", "confirm"]
+
+    error, listed = s.tool("looma_model_list")
+    assert not error and listed == {"handle": "", "models": []}
+    error, text = s.tool("looma_model_add", name="translate", base="chat-model",
+                         preset={"system": "Ты переводчик."})
+    assert error and "имя автора" in text
+    error, text = s.tool("looma_model_add", name="translate", base="chat-model")
+    assert error and "Одно из трёх" in text
+
+    error, made = s.tool("looma_model_add", name="translate", base="chat-model", handle="anna",
+                         preset={"system": "Ты переводчик."}, summary="Перевод договоров")
+    assert not error and state.handle == "anna"
+    assert (made["name"], made["form"], made["base"]) == ("anna/translate", "настройка",
+                                                          "chat-model")
+    assert made["preset"] == {"system": "Ты переводчик."} and "replicas" not in made
+
+    error, checked = s.tool("looma_model_check", repo="anna/qwen-legal")
+    assert not error and checked["fits"] is True and checked["weights"]["pickles"] == 0
+    error, heavy = s.tool("looma_model_add", name="qwen-legal", repo="anna/qwen-legal",
+                          always=True)
+    assert not error and heavy["form"] == "веса" and heavy["replicas"]["min"] == 1
+
+    error, priced = s.tool("looma_model_set", name="translate", price={"price_out": 5000})
+    assert not error and priced["price"] == {"price_out": 5000}
+    error, slept = s.tool("looma_model_set", name="qwen-legal", always=False)
+    assert not error and slept["replicas"]["min"] == 0
+    error, text = s.tool("looma_model_set", name="translate")
+    assert error and "что поменять" in text
+
+    error, pending = s.tool("looma_model_publish", name="translate")
+    assert not error and pending["publication"] == "на проверке"
+    error, back = s.tool("looma_model_unpublish", name="anna/translate")
+    assert not error and back["publication"] == "видите только вы"
+
+    error, text = s.tool("looma_model_delete", name="translate", confirm="translate")
+    assert error and "anna/translate" in text and len(state.entries) == 2
+    error, gone = s.tool("looma_model_delete", name="translate", confirm="anna/translate")
+    assert not error and gone["deleted"] is True
+    error, listed = s.tool("looma_model_list")
+    assert [m["name"] for m in listed["models"]] == ["anna/qwen-legal"]
+    error, text = s.tool("looma_model_publish", name="нет такой")
+    assert error and "у вас нет" in text
+
+
 def test_a_failed_build_gives_the_agent_the_reason(session):
     s, state, tmp = session
     s.request("initialize", {})
@@ -182,3 +233,35 @@ def test_check_reports_status_time_and_body():
         server.shutdown()
     down = ops.check("http://127.0.0.1:9/", timeout=2)
     assert not down["ok"] and down["status"] == 0 and down["error"]
+
+
+def test_own_engine_tools(session):
+    s, state, _tmp = session
+    s.request("initialize", {"protocolVersion": "2025-03-26"})
+    tools = {t["name"]: t for t in s.request("tools/list")["result"]["tools"]}
+    assert {"looma_engine_list", "looma_engine_submit", "looma_engine_share"} <= set(tools)
+    assert tools["looma_engine_submit"]["inputSchema"]["required"] == ["repo", "commit"]
+    commit = "c" * 40
+    error, text = s.tool("looma_engine_submit", repo="https://github.com/anna/echo",
+                         commit=commit)
+    assert error and "имя автора" in text
+    state.handle = "anna"
+    error, made = s.tool("looma_engine_submit", repo="https://github.com/anna/echo",
+                         commit=commit, path="engines/echo")
+    assert not error and made["ref"] == "anna/echo" and made["submitted"] == 1
+    assert made["versions"][0]["status"] == "pending"
+    error, listed = s.tool("looma_engine_list")
+    assert not error and listed["handle"] == "anna" and listed["engines"][0]["ref"] == "anna/echo"
+    error, text = s.tool("looma_engine_share", name="echo", public=True)
+    assert error and "нет одобренной версии" in text
+    state.layers[0].update(approved=1)
+    error, shared = s.tool("looma_engine_share", name="echo", public=True)
+    assert not error and shared["public"] is True
+    # Модель на своём движке: весов у неё может не быть.
+    error, checked = s.tool("looma_model_check", engine="anna/echo")
+    assert not error and checked["fits"] and checked["weights"] is None
+    error, text = s.tool("looma_model_check")
+    assert error and "repo" in text
+    error, model = s.tool("looma_model_add", name="parrot", engine="anna/echo",
+                          recipe={"repeat": 2})
+    assert not error and model["name"] == "anna/parrot" and model["form"] == "движок"

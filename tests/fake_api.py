@@ -37,6 +37,11 @@ class State:
         self.dev_dockerfile = "FROM python:3.12-slim\n"
         self.dev_texts = []
         self.dev_calls = 0
+        #: Свои модели автора в каталоге и его имя.
+        self.entries = []
+        self.handle = ""
+        self.adapters = [{"id": "adp-1", "object": "adapter", "name": "legal",
+                          "base_model": "Qwen/Qwen3-0.6B", "models": ["chat-model:legal"]}]
 
     def app(self, name):
         for app in self.apps.values():
@@ -110,10 +115,118 @@ def make_handler(state: State):
             with state.lock:
                 return self._dispatch(method, path, query, body)
 
+        def _entries(self, method, path, body):
+            """Свои модели автора: `/api/services` как у оркестратора."""
+            doc = json.loads(body) if body else {}
+            parts = [p for p in path.split("/") if p][2:]
+            if not parts:
+                if method == "GET":
+                    return self._send(200, {"services": state.entries, "handle": state.handle})
+                if not state.handle:
+                    return self._error(409, "сначала задайте имя автора: записи зовутся "
+                                            "`автор/запись`")
+                light = doc.get("preset") is not None
+                if light and (doc.get("min_replicas") or doc.get("repo")):
+                    return self._error(400, "у настройки нет своих реплик")
+                recipe = {} if light else {k: v for k, v in doc.items() if k not in (
+                    "name", "summary", "base", "preset", "min_replicas", "max_replicas")}
+                if doc.get("adapter"):
+                    recipe = {"repo": "Qwen/Qwen3-0.6B", "adapter": "adp-1"}
+                entry = {"id": len(state.entries) + 1, "label": f"{state.handle}/{doc['name']}",
+                         "form": "light" if light else "heavy", "recipe": recipe,
+                         "status": "ready" if light else "cold", "replicas": [],
+                         "min_replicas": doc.get("min_replicas", 0),
+                         "max_replicas": doc.get("max_replicas", 1), "price": {},
+                         "summary": doc.get("summary", ""), "visibility": "private",
+                         "review": "", "review_note": "", "note": "",
+                         "passport": {"kind": "text", "form": "light" if light else "heavy"}}
+                if light:
+                    entry.update(base=doc["base"], preset=doc["preset"])
+                state.entries.append(entry)
+                return self._send(200, entry)
+            entry = next((e for e in state.entries if str(e["id"]) == parts[0]), None)
+            if entry is None:
+                return self._error(404, f"сервиса {parts[0]} за вами не числится")
+            if method == "DELETE":
+                state.entries.remove(entry)
+                return self._send(200, {**entry, "state": "deleted", "dependents": 0})
+            if parts[1:] == ["publish"]:
+                entry.update(review="pending")
+            elif parts[1:] == ["unpublish"]:
+                entry.update(review="", visibility="private")
+            else:
+                if "preset" in doc and entry["form"] != "light":
+                    return self._error(400, "preset есть только у настройки поверх модели")
+                entry.update({k: v for k, v in doc.items() if k in (
+                    "price", "summary", "preset", "min_replicas", "max_replicas")})
+            return self._send(200, entry)
+
+        def _layers(self, method, path, body):
+            """Движки и расширения автора: `/api/layers` как у оркестратора."""
+            doc = json.loads(body) if body else {}
+            layers = state.__dict__.setdefault("layers", [])
+            parts = [p for p in path.split("/") if p][2:]
+            if not parts:
+                if method == "GET":
+                    return self._send(200, {"layers": layers, "handle": state.handle})
+                if not state.handle:
+                    return self._error(409, "сначала задайте имя автора: слои зовутся "
+                                            "`автор/слой`")
+                if len(doc.get("commit") or "") != 40:
+                    return self._error(400, "commit: коммит целиком, 40 знаков")
+                kind = doc.get("kind") or "engine"
+                name = "upper" if kind == "extension" else "echo"
+                ref = f"{state.handle}/{name}"
+                layer = next((x for x in layers if x["ref"] == ref), None)
+                if layer is None:
+                    layer = {"ref": ref, "kind": kind, "title": "Учебный движок",
+                             "public": False, "approved": None, "versions": []}
+                    layers.append(layer)
+                number = len(layer["versions"]) + 1
+                layer["versions"].insert(0, {
+                    "number": number, "status": "pending", "note": "", "files": 2,
+                    "source": {"repo": doc["repo"], "commit": doc["commit"],
+                               "path": doc.get("path", "")},
+                    "extends": f"{state.handle}/echo" if kind == "extension" else None})
+                return self._send(200, {**layer, "submitted": number})
+            layer = next((x for x in layers if x["ref"] == "/".join(parts[:2])), None)
+            if layer is None:
+                return self._error(404, f"слоя {'/'.join(parts[:2])} у вас нет")
+            if doc.get("public") and layer["approved"] is None:
+                return self._error(409, "нет одобренной версии: открывать нечего")
+            layer["public"] = bool(doc.get("public"))
+            return self._send(200, layer)
+
         def _dispatch(self, method, path, query, body):
+            if path == "/api/me" and method == "PATCH":
+                if state.handle:
+                    return self._error(409, "имя автора уже задано")
+                state.handle = json.loads(body)["handle"]
+                return self._send(200, {"id": 1, "handle": state.handle})
             if path == "/api/me":
                 return self._send(200, {"id": 1, "email": "author@example.ru", "role": "client",
                                         "project_id": 7, "scopes": ["read", "deploy"]})
+            if path == "/api/services" or path.startswith("/api/services/"):
+                return self._entries(method, path, body)
+            if path == "/api/layers" or path.startswith("/api/layers/"):
+                return self._layers(method, path, body)
+            if path == "/api/models/check":
+                doc = json.loads(body)
+                state.model_checks = getattr(state, "model_checks", []) + [doc]
+                if "/" in doc.get("engine", ""):
+                    return self._send(200, {"engine": doc["engine"], "model": {}, "flags": {},
+                                            "fits": True, "stages": 1, "nodes_fit": 1,
+                                            "error": "", "weights": None})
+                if "pickle" in doc["repo"]:
+                    return self._error(403, "веса лежат только в pickle: нужен safetensors")
+                return self._send(200, {"engine": doc.get("engine", "torch"), "model": {},
+                                        "flags": {}, "fits": True, "stages": 2, "nodes_fit": 3,
+                                        "error": "", "weights": {"repo": doc["repo"], "files": 4,
+                                                                 "weights_bytes": 8 * 2 ** 30,
+                                                                 "pickles": 0,
+                                                                 "remote_code": []}})
+            if path == "/v1/adapters":
+                return self._send(200, {"object": "list", "data": state.adapters})
             if path == "/v1/models":
                 return self._send(200, {"object": "list",
                                         "data": getattr(state, "models", [{"id": "chat-model"}])})
@@ -145,7 +258,9 @@ def make_handler(state: State):
                 doc = json.loads(body)
                 state.chat_clients = getattr(state, "chat_clients", []) + [
                     self.headers.get("X-Looma-Client")]
-                text = f"эхо: {doc['messages'][-1]['content']}"
+                # Настройку автора зовут полями входа вместо сообщений.
+                text = (f"эхо: {doc['messages'][-1]['content']}" if doc.get("messages")
+                        else "поля: " + json.dumps(doc.get("input"), ensure_ascii=False))
                 state.chats = getattr(state, "chats", []) + [doc]
                 if doc.get("stream"):
                     events = b"".join(
@@ -367,6 +482,9 @@ def make_handler(state: State):
 
         def do_DELETE(self):
             self._route("DELETE")
+
+        def do_PATCH(self):
+            self._route("PATCH")
 
     return Handler
 

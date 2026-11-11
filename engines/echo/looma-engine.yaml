@@ -1,0 +1,32 @@
+# Учебный движок Looma Float: отвечает эхом и показывает договор движка с площадкой.
+name: echo
+title: Учебный движок
+text: Повторяет последнее сообщение. Образец движка автора, без весов и без видеокарты.
+kinds: [text]
+package: echo_engine
+command: [python, -m, echo_engine.server]
+requirements: requirements.txt
+weights: none
+extensions: true
+requires:
+  device: [cuda, mps, cpu]
+  ram_gib: 1
+fields:
+  - key: prefix
+    label: Приставка к ответу
+    type: text
+    default: ""
+    hint: Текст перед каждым ответом.
+  - key: repeat
+    label: Сколько раз повторить
+    type: int
+    min: 1
+    max: 5
+    default: 1
+  - key: tone
+    label: Тон
+    type: select
+    default: plain
+    options:
+      - {value: plain, label: как есть}
+      - {value: loud, label: заглавными}

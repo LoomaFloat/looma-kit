@@ -94,6 +94,87 @@ TOOLS = [
      "description": "Модели каталога: имя для gpu: манифеста, тип (text, image, video, "
                     "embedding, rerank), отвечает или спит, контекст.",
      "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "looma_model_list",
+     "description": "Свои модели автора в каталоге (не модели сети: те в looma_models): имя "
+                    "`автор/модель`, вид (веса, адаптер, настройка), состояние, публикация, "
+                    "цена в копейках. handle — имя автора.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "looma_model_check",
+     "description": "Проверить веса с HuggingFace без запуска: формат safetensors, размер, нет "
+                    "ли своего кода модели, встанет ли модель в сети сейчас. С движком автора "
+                    "(engine вида автор/движок) repo нужен, только если движок работает с "
+                    "весами: тогда проверяется, есть ли узлы, на которых движок встанет.",
+     "inputSchema": {"type": "object", "properties": {
+         "repo": {"type": "string", "description": "репозиторий: владелец/модель"},
+         "engine": {"type": "string", "description": "движок; по умолчанию torch"},
+         "recipe": {"type": "object", "description": "параметры движка, если нужны"}}}},
+    {"name": "looma_model_add",
+     "description": "Добавить свою модель в каталог. Одно из трёх: repo (свои веса на движке "
+                    "площадки, свои реплики); base и adapter (модель каталога с адаптером LoRA, "
+                    "свои реплики); base и preset (настройка поверх модели каталога без своих "
+                    "реплик: system, template, inputs, params у текста; prompt, inputs, params "
+                    "у изображений и видео). Сначала модель видит только автор. handle нужен "
+                    "один раз, если имя автора ещё не задано.",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string", "description": "имя модели: латиница, цифры, точка, дефис"},
+         "repo": {"type": "string"}, "engine": {"type": "string"},
+         "recipe": {"type": "object", "description": "параметры движка"},
+         "base": {"type": "string", "description": "модель каталога из looma_models"},
+         "adapter": {"type": "string", "description": "адаптер LoRA: имя или номер"},
+         "preset": {"type": "object", "description": "настройка поверх base"},
+         "summary": {"type": "string", "description": "одна строка о модели"},
+         "always": {"type": "boolean", "description": "держать реплику всегда"},
+         "handle": {"type": "string", "description": "имя автора, если ещё не задано"}},
+         "required": ["name"]}},
+    {"name": "looma_engine_list",
+     "description": "Свои движки и расширения автора: имя `автор/движок`, вид, открыт ли "
+                    "другим авторам, версии с решением ревью (pending, approved, rejected) и "
+                    "причиной отказа. На одобренном движке собирают модель: looma_model_add с "
+                    "engine `автор/движок`.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "looma_engine_submit",
+     "description": "Подать версию своего движка или расширения на ревью площадки. Код берётся "
+                    "из открытого репозитория на GitHub на названном коммите: в папке лежит "
+                    "looma-engine.yaml (или looma-extension.yaml) и пакет на Python. Версия "
+                    "ждёт проверки; новая версия проходит ревью заново. Только по прямой "
+                    "просьбе пользователя.",
+     "inputSchema": {"type": "object", "properties": {
+         "repo": {"type": "string", "description": "https://github.com/автор/репозиторий"},
+         "commit": {"type": "string", "description": "коммит целиком, 40 знаков"},
+         "path": {"type": "string", "description": "папка с манифестом, если он не в корне"},
+         "extension": {"type": "boolean", "description": "это расширение движка"}},
+         "required": ["repo", "commit"]}},
+    {"name": "looma_engine_share",
+     "description": "Открыть свой одобренный движок или расширение другим авторам (public: "
+                    "true) или закрыть (false). Только по прямой просьбе пользователя.",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string"}, "public": {"type": "boolean"}},
+         "required": ["name", "public"]}},
+    {"name": "looma_model_set",
+     "description": "Поменять свою модель: summary; price в копейках ({price_in, price_out} за "
+                    "1M токенов, price_image, price_second; {} убирает цену; у настройки это "
+                    "надбавка к цене основы); preset (только пока настройка не опубликована); "
+                    "always (держать реплику всегда или разрешить засыпать).",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string"}, "summary": {"type": "string"},
+         "price": {"type": "object"}, "preset": {"type": "object"},
+         "always": {"type": "boolean"}}, "required": ["name"]}},
+    {"name": "looma_model_publish",
+     "description": "Подать свою модель на публикацию: после проверки площадки её зовут все "
+                    "авторы по её цене. Только по прямой просьбе пользователя.",
+     "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}},
+                     "required": ["name"]}},
+    {"name": "looma_model_unpublish",
+     "description": "Снять свою модель с публикации или отозвать заявку: зовёт только автор.",
+     "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}},
+                     "required": ["name"]}},
+    {"name": "looma_model_delete",
+     "description": "Удалить свою модель: реплики остановятся, сервисы, которые её зовут, "
+                    "получат отказ. Необратимо; confirm должен повторять имя. Только по прямой "
+                    "просьбе пользователя.",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string"}, "confirm": {"type": "string"}},
+         "required": ["name", "confirm"]}},
     {"name": "looma_deploy",
      "description": "Собрать релиз из папки с looma.yaml и поставить на staging (promote=true — "
                     "и сразу на prod). Ждёт сборки; при отказе — причина и хвост лога. "
@@ -284,6 +365,82 @@ class Server:
     def looma_models(self):
         return [{k: m.get(k) for k in ("id", "kind", "status", "context", "dimensions")
                  if m.get(k) is not None} for m in self.looma.models()]
+
+    def looma_model_list(self):
+        doc = self.looma.entries.mine()
+        return {"handle": doc.get("handle") or "",
+                "models": [ops.entry_row(e) for e in doc["services"]]}
+
+    def looma_model_check(self, repo: str = "", engine: str = "",
+                          recipe: Optional[dict] = None):
+        if not repo and "/" not in engine:
+            raise ops.OpError("что проверить? repo: владелец/модель")
+        found = self.looma.entries.check({**(recipe or {}), **({"repo": repo} if repo else {}),
+                                          **({"engine": engine} if engine else {})})
+        return {k: found.get(k) for k in ("engine", "model", "weights", "fits", "stages",
+                                          "nodes_fit", "error")}
+
+    def looma_model_add(self, name: str, repo: str = "", engine: str = "",
+                        recipe: Optional[dict] = None, base: str = "", adapter: str = "",
+                        preset: Optional[dict] = None, summary: str = "", always: bool = False,
+                        handle: str = ""):
+        payload = ops.entry_payload(name=name, repo=repo, engine=engine, recipe=recipe, base=base,
+                                    adapter=adapter, preset=preset, summary=summary,
+                                    always=always)
+        return self._model(ops.add_entry(self.looma, payload, handle))
+
+    def looma_engine_list(self):
+        doc = self.looma.engines.mine()
+        return {"handle": doc.get("handle") or "", "engines": doc["layers"]}
+
+    def looma_engine_submit(self, repo: str, commit: str, path: str = "",
+                            extension: bool = False):
+        if not self.looma.engines.mine().get("handle"):
+            raise ops.OpError("сначала задайте имя автора: с него начинаются имена движков "
+                              "(looma_model_add с handle или `looma model name <имя>`)")
+        return self.looma.engines.submit(repo=repo, commit=commit, path=path,
+                                         kind="extension" if extension else "engine")
+
+    def looma_engine_share(self, name: str, public: bool):
+        layer = ops.find_layer(self.looma, name)
+        return self.looma.engines.share(layer["ref"], bool(public))
+
+    def looma_model_set(self, name: str, summary: Optional[str] = None,
+                        price: Optional[dict] = None, preset: Optional[dict] = None,
+                        always: Optional[bool] = None):
+        entry = ops.find_entry(self.looma, name)
+        changes = {k: v for k, v in (("summary", summary), ("price", price), ("preset", preset))
+                   if v is not None}
+        if always is not None:
+            changes.update({"min_replicas": 1, "max_replicas": max(1, entry["max_replicas"])}
+                           if always else {"min_replicas": 0})
+        if not changes:
+            raise ops.OpError("что поменять? summary, price, preset или always")
+        return self._model(self.looma.entries.update(entry["id"], changes))
+
+    def looma_model_publish(self, name: str):
+        entry = ops.find_entry(self.looma, name)
+        return self._model(self.looma.entries.publish(entry["id"]))
+
+    def looma_model_unpublish(self, name: str):
+        entry = ops.find_entry(self.looma, name)
+        return self._model(self.looma.entries.unpublish(entry["id"]))
+
+    def looma_model_delete(self, name: str, confirm: str):
+        entry = ops.find_entry(self.looma, name)
+        if confirm != entry["label"]:
+            raise ops.OpError(f"confirm должен повторять имя модели ({entry['label']}): "
+                              "удаление необратимо")
+        gone = self.looma.entries.delete(entry["id"])
+        return {"name": entry["label"], "deleted": True,
+                "dependents": gone.get("dependents", 0)}
+
+    @staticmethod
+    def _model(entry: dict) -> dict:
+        row = ops.entry_row(entry)
+        if entry.get("form") == "light":
+            row["preset"] = entry.get("preset") or {}
+        return row
 
     def looma_deploy(self, directory: str, app: Optional[str] = None, promote: bool = False):
         return ops.deploy(self.looma, Path(directory), app=app, promote=promote,

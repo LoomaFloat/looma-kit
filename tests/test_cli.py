@@ -337,3 +337,165 @@ def test_stats_reads_like_a_report(api, capsys, tmp_path, monkeypatch):
     assert "Qwen-Image-2.1: вызовы 1, изображения 2, —" in out
     assert "себестоимость: 0,30 ₽" in out and "нет в прайсе (не посчитаны): Qwen-Image-2.1" in out
     assert "looma dev: вызовы моделей 3" in out and "cl_bob" in out
+
+
+# ------------------------------------------------- свои модели в каталоге
+def test_own_model_from_weights_to_publication(api, capsys):
+    base, state = api
+    login(base, capsys)
+    code, out, _err = run(capsys, "model")
+    assert code == 0 and "своих моделей нет" in out
+
+    code, _out, err = run(capsys, "model", "add", "qwen-legal", "--repo", "anna/qwen-legal")
+    assert code == 1 and "имя автора" in err, "без имени автора модель не завести"
+    code, out, _err = run(capsys, "model", "name", "anna")
+    assert code == 0 and "anna/<имя>" in out and state.handle == "anna"
+    code, _out, err = run(capsys, "model", "name", "other")
+    assert code == 1 and "уже задано: anna" in err
+
+    code, out, _err = run(capsys, "model", "check", "--repo", "anna/qwen-legal", "--set",
+                          "stages=2")
+    assert code == 0 and "веса проходят" in out and "8.0 ГиБ" in out and "на 2 узлах" in out
+    assert state.model_checks[-1] == {"repo": "anna/qwen-legal", "stages": 2}
+    code, _out, err = run(capsys, "model", "check", "--repo", "anna/pickle-only")
+    assert code == 1 and "safetensors" in err
+
+    code, out, _err = run(capsys, "model", "add", "qwen-legal", "--repo", "anna/qwen-legal",
+                          "--engine", "vllm", "--set", "max_model_len=8192", "--summary",
+                          "Юридический ассистент", "--always")
+    assert code == 0 and "anna/qwen-legal: веса" in out and "looma model publish" in out
+    sent = json.loads([c for c in state.calls if c[:2] == ("POST", "/api/services")][-1][3])
+    assert sent == {"name": "qwen-legal", "summary": "Юридический ассистент", "min_replicas": 1,
+                    "max_replicas": 1, "max_model_len": 8192, "repo": "anna/qwen-legal",
+                    "engine": "vllm"}
+
+    code, out, _err = run(capsys, "model", "set", "qwen-legal", "--price", "in=5", "--price",
+                          "out=12,5", "--sleep")
+    assert code == 0 and "вход 5,00 ₽, выход 12,50 ₽ за 1M токенов" in out
+    assert state.entries[0]["price"] == {"price_in": 500, "price_out": 1250}
+    assert state.entries[0]["min_replicas"] == 0
+    code, _out, err = run(capsys, "model", "set", "qwen-legal", "--price", "tokens=5")
+    assert code == 1 and "единицы: in, out, image, second" in err
+    code, _out, err = run(capsys, "model", "set", "qwen-legal")
+    assert code == 1 and "что поменять" in err
+
+    code, out, _err = run(capsys, "model", "publish", "anna/qwen-legal")
+    assert code == 0 and "отправлена на проверку" in out and "на проверке" in out
+    code, out, _err = run(capsys, "model", "list")
+    assert "anna/qwen-legal" in out and "веса" in out and "на проверке" in out
+    code, out, _err = run(capsys, "model", "unpublish", "qwen-legal")
+    assert code == 0 and "видите только вы" in out
+
+    code, _out, err = run(capsys, "model", "delete", "qwen-legal")
+    assert code == 1 and "--yes" in err and state.entries
+    code, out, _err = run(capsys, "model", "delete", "qwen-legal", "--yes")
+    assert code == 0 and "удалена" in out and state.entries == []
+    code, _out, err = run(capsys, "model", "show", "qwen-legal")
+    assert code == 1 and "у вас нет" in err
+
+
+def test_preset_over_a_catalog_model(api, capsys, tmp_path):
+    base, state = api
+    login(base, capsys)
+    state.handle = "anna"
+    preset = {"system": "Ты переводчик договоров.", "template": "Переведи:\n{text}",
+              "inputs": [{"name": "text", "title": "Текст договора"}]}
+    path = tmp_path / "preset.json"
+    path.write_text(json.dumps(preset, ensure_ascii=False), encoding="utf-8")
+
+    code, _out, err = run(capsys, "model", "add", "translate", "--base", "chat-model")
+    assert code == 1 and "Одно из трёх" in err
+    code, _out, err = run(capsys, "model", "add", "translate", "--base", "chat-model",
+                          "--preset", str(path), "--always")
+    assert code == 1 and "нет своих реплик" in err
+    code, _out, err = run(capsys, "model", "add", "translate", "--base", "chat-model",
+                          "--preset", str(tmp_path / "нет.json"))
+    assert code == 1 and "не прочитать" in err
+
+    code, out, _err = run(capsys, "model", "add", "translate", "--base", "chat-model",
+                          "--preset", str(path), "--summary", "Перевод договоров")
+    assert code == 0 and "anna/translate: настройка" in out
+    assert "работает на: chat-model (своих реплик нет)" in out and "без надбавки" in out
+    sent = json.loads([c for c in state.calls if c[:2] == ("POST", "/api/services")][-1][3])
+    assert sent == {"name": "translate", "summary": "Перевод договоров", "base": "chat-model",
+                    "preset": preset}
+
+    path.write_text(json.dumps({"system": "Ты редактор."}), encoding="utf-8")
+    code, out, _err = run(capsys, "model", "set", "translate", "--preset", str(path), "--price",
+                          "out=50")
+    assert code == 0 and "надбавка: выход 50,00 ₽ за 1M токенов" in out
+    assert state.entries[0]["preset"] == {"system": "Ты редактор."}
+    code, out, _err = run(capsys, "model", "show", "translate")
+    assert code == 0 and '"system": "Ты редактор."' in out
+    code, out, _err = run(capsys, "model", "list")
+    assert "настройка" in out and "поверх chat-model" in out
+
+    # SDK: настройку со своим входом зовут полями вместо сообщений.
+    looma = Looma(api_url=base, key=fake_api.KEY)
+    assert looma.chat("anna/translate", input={"text": "Договор"}) == 'поля: {"text": "Договор"}'
+    assert state.chats[-1] == {"model": "anna/translate", "input": {"text": "Договор"}}
+    assert looma.chat("chat-model", "привет", temperature=0.2) == "эхо: привет"
+    assert "".join(looma.chat_stream("anna/translate", input={"text": "x"})).startswith("поля")
+
+
+def test_model_with_an_adapter(api, capsys):
+    base, state = api
+    login(base, capsys)
+    state.handle = "anna"
+    code, out, _err = run(capsys, "model", "adapters")
+    assert code == 0 and "legal" in out and "Qwen/Qwen3-0.6B" in out
+    code, out, _err = run(capsys, "model", "add", "qwen-legal", "--base", "chat-model",
+                          "--adapter", "legal")
+    assert code == 0 and "anna/qwen-legal: адаптер" in out and "адаптер: adp-1" in out
+    sent = json.loads([c for c in state.calls if c[:2] == ("POST", "/api/services")][-1][3])
+    assert sent == {"name": "qwen-legal", "min_replicas": 0, "max_replicas": 1,
+                    "base": "chat-model", "adapter": "legal"}
+
+
+
+def test_own_engine_from_repository_to_a_model(api, capsys):
+    base, state = api
+    login(base, capsys)
+    commit = "c" * 40
+    code, out, _err = run(capsys, "engine")
+    assert code == 0 and "своих движков нет" in out
+    code, _out, err = run(capsys, "engine", "submit", "--repo", "https://github.com/anna/echo")
+    assert code == 1 and "--commit" in err
+    code, _out, err = run(capsys, "engine", "submit", "--repo", "https://github.com/anna/echo",
+                          "--commit", commit)
+    assert code == 1 and "looma model name" in err, "сначала имя автора"
+    state.handle = "anna"
+    code, out, err = run(capsys, "engine", "submit", "--repo", "https://github.com/anna/echo",
+                         "--commit", commit, "--path", "engines/echo")
+    assert code == 0, err
+    assert "anna/echo: движок" in out and "версия 1: ждёт проверки, коммит cccccccccccc" in out
+    assert "looma model add <имя> --engine anna/echo" in out
+    sent = json.loads([c for c in state.calls if c[:2] == ("POST", "/api/layers")][-1][3])
+    assert sent == {"repo": "https://github.com/anna/echo", "commit": commit, "kind": "engine",
+                    "path": "engines/echo"}
+
+    code, _out, err = run(capsys, "engine", "open", "echo")
+    assert code == 1 and "нет одобренной версии" in err
+    state.layers[0].update(approved=1)
+    state.layers[0]["versions"][0].update(status="approved")
+    code, out, _err = run(capsys, "engine", "open", "echo")
+    assert code == 0 and "открыт" in out and "открыт авторам" in out
+    code, out, _err = run(capsys, "engine", "show", "anna/echo")
+    assert code == 0 and "версия 1: одобрена" in out
+    code, _out, err = run(capsys, "engine", "show", "nope")
+    assert code == 1 and "looma engine list" in err
+
+    code, out, _err = run(capsys, "engine", "submit", "--repo", "https://github.com/anna/echo",
+                          "--commit", commit, "--extension")
+    assert code == 0 and "anna/upper: расширение" in out and "для движка anna/echo" in out
+
+    # Модель на своём движке: весов у неё может не быть.
+    code, out, _err = run(capsys, "model", "check", "--engine", "anna/echo")
+    assert code == 0 and "целиком на одном узле" in out and "веса проходят" not in out
+    code, out, err = run(capsys, "model", "add", "parrot", "--engine", "anna/echo",
+                         "--set", "repeat=2")
+    assert code == 0, err
+    assert "anna/parrot: движок" in out and "движок: anna/echo" in out
+    sent = json.loads([c for c in state.calls if c[:2] == ("POST", "/api/services")][-1][3])
+    assert sent == {"name": "parrot", "min_replicas": 0, "max_replicas": 1, "repeat": 2,
+                    "engine": "anna/echo"}
