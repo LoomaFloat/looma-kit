@@ -129,7 +129,8 @@ def make_handler(state: State):
                 if light and (doc.get("min_replicas") or doc.get("repo")):
                     return self._error(400, "у настройки нет своих реплик")
                 recipe = {} if light else {k: v for k, v in doc.items() if k not in (
-                    "name", "summary", "base", "preset", "min_replicas", "max_replicas")}
+                    "name", "summary", "base", "preset", "min_replicas", "max_replicas",
+                    "contours")}
                 if doc.get("adapter"):
                     recipe = {"repo": "Qwen/Qwen3-0.6B", "adapter": "adp-1"}
                 entry = {"id": len(state.entries) + 1, "label": f"{state.handle}/{doc['name']}",
@@ -139,7 +140,8 @@ def make_handler(state: State):
                          "max_replicas": doc.get("max_replicas", 1), "price": {},
                          "summary": doc.get("summary", ""), "visibility": "private",
                          "review": "", "review_note": "", "note": "",
-                         "passport": {"kind": "text", "form": "light" if light else "heavy"}}
+                         "passport": {"kind": "text", "form": "light" if light else "heavy",
+                                      "contours": doc.get("contours") or ["platform", "open"]}}
                 if light:
                     entry.update(base=doc["base"], preset=doc["preset"])
                 state.entries.append(entry)
@@ -159,6 +161,8 @@ def make_handler(state: State):
                     return self._error(400, "preset есть только у настройки поверх модели")
                 entry.update({k: v for k, v in doc.items() if k in (
                     "price", "summary", "preset", "min_replicas", "max_replicas")})
+                if "contours" in doc:
+                    entry["passport"]["contours"] = doc["contours"] or ["platform", "open"]
             return self._send(200, entry)
 
         def _layers(self, method, path, body):
@@ -186,7 +190,7 @@ def make_handler(state: State):
                 layer["versions"].insert(0, {
                     "number": number, "status": "pending", "note": "", "files": 2,
                     "source": {"repo": doc["repo"], "commit": doc["commit"],
-                               "path": doc.get("path", "")},
+                               "path": doc.get("path", "")}, "fee": doc.get("fee") or {},
                     "extends": f"{state.handle}/echo" if kind == "extension" else None})
                 return self._send(200, {**layer, "submitted": number})
             layer = next((x for x in layers if x["ref"] == "/".join(parts[:2])), None)

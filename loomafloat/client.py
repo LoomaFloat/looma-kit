@@ -518,11 +518,16 @@ class Engines:
     def list(self) -> List[dict]:
         return self.mine()["layers"]
 
-    def submit(self, *, repo: str, commit: str, path: str = "", kind: str = "engine") -> dict:
-        """Подать версию на ревью. То же содержимое второй раз — прежняя версия."""
+    def submit(self, *, repo: str, commit: str, path: str = "", kind: str = "engine",
+               fee: Optional[dict] = None) -> dict:
+        """Подать версию на ревью. То же содержимое второй раз — прежняя версия.
+        `fee` — доля автора движка с чужих вызовов, копейки за 1M токенов
+        (`price_in`, `price_out`); закрепляется за версией."""
         payload = {"repo": repo, "commit": commit, "kind": kind}
         if path:
             payload["path"] = path
+        if fee:
+            payload["fee"] = fee
         return send_json("POST", self._url(), payload, key=self.looma.key)
 
     def share(self, ref: str, public: bool) -> dict:

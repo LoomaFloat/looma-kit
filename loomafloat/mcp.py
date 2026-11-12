@@ -124,6 +124,8 @@ TOOLS = [
          "preset": {"type": "object", "description": "настройка поверх base"},
          "summary": {"type": "string", "description": "одна строка о модели"},
          "always": {"type": "boolean", "description": "держать реплику всегда"},
+         "own_nodes": {"type": "boolean", "description": "держать модель только на своих узлах "
+                                                         "автора (раздел «Узлы» кабинета)"},
          "handle": {"type": "string", "description": "имя автора, если ещё не задано"}},
          "required": ["name"]}},
     {"name": "looma_engine_list",
@@ -142,7 +144,9 @@ TOOLS = [
          "repo": {"type": "string", "description": "https://github.com/автор/репозиторий"},
          "commit": {"type": "string", "description": "коммит целиком, 40 знаков"},
          "path": {"type": "string", "description": "папка с манифестом, если он не в корне"},
-         "extension": {"type": "boolean", "description": "это расширение движка"}},
+         "extension": {"type": "boolean", "description": "это расширение движка"},
+         "fee": {"type": "object", "description": "доля автора движка с чужих вызовов, копейки "
+                                                  "за 1M токенов: {price_in, price_out}"}},
          "required": ["repo", "commit"]}},
     {"name": "looma_engine_share",
      "description": "Открыть свой одобренный движок или расширение другим авторам (public: "
@@ -158,7 +162,10 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string"}, "summary": {"type": "string"},
          "price": {"type": "object"}, "preset": {"type": "object"},
-         "always": {"type": "boolean"}}, "required": ["name"]}},
+         "always": {"type": "boolean"},
+         "own_nodes": {"type": "boolean", "description": "true — только свои узлы, false — "
+                                                         "ещё и узлы сети"}},
+         "required": ["name"]}},
     {"name": "looma_model_publish",
      "description": "Подать свою модель на публикацию: после проверки площадки её зовут все "
                     "авторы по её цене. Только по прямой просьбе пользователя.",
@@ -383,10 +390,10 @@ class Server:
     def looma_model_add(self, name: str, repo: str = "", engine: str = "",
                         recipe: Optional[dict] = None, base: str = "", adapter: str = "",
                         preset: Optional[dict] = None, summary: str = "", always: bool = False,
-                        handle: str = ""):
+                        handle: str = "", own_nodes: bool = False):
         payload = ops.entry_payload(name=name, repo=repo, engine=engine, recipe=recipe, base=base,
                                     adapter=adapter, preset=preset, summary=summary,
-                                    always=always)
+                                    always=always, own=own_nodes)
         return self._model(ops.add_entry(self.looma, payload, handle))
 
     def looma_engine_list(self):
@@ -394,12 +401,12 @@ class Server:
         return {"handle": doc.get("handle") or "", "engines": doc["layers"]}
 
     def looma_engine_submit(self, repo: str, commit: str, path: str = "",
-                            extension: bool = False):
+                            extension: bool = False, fee: Optional[dict] = None):
         if not self.looma.engines.mine().get("handle"):
             raise ops.OpError("сначала задайте имя автора: с него начинаются имена движков "
                               "(looma_model_add с handle или `looma model name <имя>`)")
         return self.looma.engines.submit(repo=repo, commit=commit, path=path,
-                                         kind="extension" if extension else "engine")
+                                         kind="extension" if extension else "engine", fee=fee)
 
     def looma_engine_share(self, name: str, public: bool):
         layer = ops.find_layer(self.looma, name)
@@ -407,15 +414,17 @@ class Server:
 
     def looma_model_set(self, name: str, summary: Optional[str] = None,
                         price: Optional[dict] = None, preset: Optional[dict] = None,
-                        always: Optional[bool] = None):
+                        always: Optional[bool] = None, own_nodes: Optional[bool] = None):
         entry = ops.find_entry(self.looma, name)
         changes = {k: v for k, v in (("summary", summary), ("price", price), ("preset", preset))
                    if v is not None}
         if always is not None:
             changes.update({"min_replicas": 1, "max_replicas": max(1, entry["max_replicas"])}
                            if always else {"min_replicas": 0})
+        if own_nodes is not None:
+            changes["contours"] = ["own"] if own_nodes else None
         if not changes:
-            raise ops.OpError("что поменять? summary, price, preset или always")
+            raise ops.OpError("что поменять? summary, price, preset, always или own_nodes")
         return self._model(self.looma.entries.update(entry["id"], changes))
 
     def looma_model_publish(self, name: str):

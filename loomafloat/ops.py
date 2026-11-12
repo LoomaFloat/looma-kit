@@ -310,6 +310,8 @@ def entry_row(entry: dict) -> dict:
             row["engine_version"] = (entry.get("recipe") or {}).get("engine_version")
         row["replicas"] = {"min": entry.get("min_replicas"), "max": entry.get("max_replicas"),
                            "running": len(entry.get("replicas") or [])}
+        # Модель работает только на узлах своего владельца.
+        row["own_nodes"] = list((entry.get("passport") or {}).get("contours") or []) == ["own"]
     for name in ("note", "review_note"):
         if entry.get(name):
             row[name] = entry[name]
@@ -366,7 +368,7 @@ def read_preset(path: Path) -> dict:
 
 def entry_payload(*, name: str, repo: str = "", engine: str = "", recipe: Optional[dict] = None,
                   base: str = "", adapter: str = "", preset: Optional[dict] = None,
-                  summary: str = "", always: bool = False) -> dict:
+                  summary: str = "", always: bool = False, own: bool = False) -> dict:
     """Тело запроса на новую запись: одно из трёх — свои веса (`repo`), модель
     каталога с адаптером (`base` и `adapter`), настройка (`base` и `preset`)."""
     if not name:
@@ -382,11 +384,13 @@ def entry_payload(*, name: str, repo: str = "", engine: str = "", recipe: Option
     if summary:
         payload["summary"] = summary
     if preset is not None and base:
-        if always or recipe or engine:
+        if always or recipe or engine or own:
             raise EntryError("у настройки нет своих реплик и движка: она работает на репликах "
                              f"{base}")
         return {**payload, "base": base, "preset": preset}
     payload.update(min_replicas=1 if always else 0, max_replicas=1)
+    if own:
+        payload["contours"] = ["own"]         # модель встаёт только на свои узлы автора
     if base:
         return {**payload, "base": base, "adapter": adapter}
     return {**payload, **(recipe or {}), **({"repo": repo} if repo else {}),
@@ -397,6 +401,26 @@ def entry_payload(*, name: str, repo: str = "", engine: str = "", recipe: Option
 LAYER_KINDS = {"engine": "движок", "extension": "расширение"}
 LAYER_STATES = {"pending": "ждёт проверки", "approved": "одобрена", "rejected": "отклонена",
                 "draft": "черновик"}
+IMAGE_STATES = {"pending": "образ собирается", "approved": "образ собран",
+                "rejected": "образ не собран"}
+
+
+def fee_text(fee: Optional[dict]) -> str:
+    """Доля автора движка словами; пусто — доли нет."""
+    fee = fee or {}
+    if not fee.get("price_in") and not fee.get("price_out"):
+        return ""
+    return (f"вход {rubles(fee.get('price_in') or 0)}, выход {rubles(fee.get('price_out') or 0)} "
+            "за 1M токенов")
+
+
+def fee_of(pairs) -> dict:
+    """`in=1 out=3` (рубли за 1M токенов) → доля автора движка в копейках."""
+    fee = price_of(pairs)
+    extra = sorted(set(fee) - {"price_in", "price_out"})
+    if extra:
+        raise EntryError("доля автора движка считается за токены: in и out")
+    return fee
 
 
 def layer_lines(layer: dict) -> list:
@@ -406,16 +430,25 @@ def layer_lines(layer: dict) -> list:
         head += f", «{layer['title']}»"
     head += ", открыт авторам" if layer.get("public") else ", виден только вам"
     lines = [head]
+    if layer.get("earned"):
+        lines.append(f"  начислено с начала месяца: {rubles(layer['earned'])}")
     for version in layer.get("versions") or []:
         source = version.get("source") or {}
+        # Движок-образ ревью не проходит: его версию одобряет сборка образа.
+        states = IMAGE_STATES if version.get("form") == "image" else LAYER_STATES
         line = (f"  версия {version['number']}: "
-                f"{LAYER_STATES.get(version['status'], version['status'])}, "
+                f"{states.get(version['status'], version['status'])}, "
                 f"коммит {str(source.get('commit') or '')[:12]}")
         if version.get("extends"):
             line += f", для движка {version['extends']}"
+        if fee_text(version.get("fee")):
+            line += f", доля: {fee_text(version.get('fee'))}"
         lines.append(line)
         if version.get("note"):
-            lines.append(f"    ревью: {version['note']}")
+            lines.append(f"    {'сборка' if version.get('form') == 'image' else 'ревью'}: "
+                         f"{version['note']}")
+        for row in str(version.get("log") or "").splitlines()[-12:]:
+            lines.append(f"      {row}")
     return lines
 
 

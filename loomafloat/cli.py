@@ -241,6 +241,8 @@ def _model_lines(entry: dict) -> list:
         replicas = row["replicas"]
         lines.append(f"  реплики: работает {replicas['running']}, держать всегда "
                      f"{replicas['min']}")
+        if row.get("own_nodes"):
+            lines.append("  узлы: только свои")
     lines.append(f"  цена: {ops.entry_price(entry)}")
     if row.get("note"):
         lines.append(f"  внимание: {row['note']}")
@@ -271,11 +273,16 @@ def cmd_engine(args) -> None:
                            "`looma model name <имя>`")
             made = looma.engines.submit(repo=args.repo, commit=args.commit,
                                         path=args.path or "",
-                                        kind="extension" if args.extension else "engine")
+                                        kind="extension" if args.extension else "engine",
+                                        fee=ops.fee_of(args.fee))
             for line in ops.layer_lines(made):
                 say(line)
-            say(f"версия {made.get('submitted')} ждёт проверки площадки. Одобренную версию "
-                f"берут в модель: `looma model add <имя> --engine {made['ref']}`")
+            image = any(v.get("form") == "image" and v["number"] == made.get("submitted")
+                        for v in made.get("versions") or [])
+            say((f"версия {made.get('submitted')}: площадка собирает образ, это несколько минут; "
+                 "ход виден в `looma engine`. Собранную версию" if image else
+                 f"версия {made.get('submitted')} ждёт проверки площадки. Одобренную версию")
+                + f" берут в модель: `looma model add <имя> --engine {made['ref']}`")
         elif action in ("show", "open", "close"):
             if not name:
                 raise Stop(f"какой движок? looma engine {action} <имя>")
@@ -346,7 +353,7 @@ def cmd_model(args) -> None:
             payload = ops.entry_payload(
                 name=name or "", repo=args.repo or "", engine=args.engine or "",
                 recipe=ops.recipe_of(args.set), base=args.base or "", adapter=args.adapter or "",
-                preset=preset, summary=args.summary or "", always=args.always)
+                preset=preset, summary=args.summary or "", always=args.always, own=args.own)
             made = ops.add_entry(looma, payload)
             for line in _model_lines(made):
                 say(line)
@@ -370,9 +377,13 @@ def cmd_model(args) -> None:
                     changes.update(min_replicas=1, max_replicas=max(1, entry["max_replicas"]))
                 elif args.sleep:
                     changes["min_replicas"] = 0
+                if args.own:
+                    changes["contours"] = ["own"]
+                elif args.network:
+                    changes["contours"] = None
                 if not changes:
-                    raise Stop("что поменять? --summary, --price, --free, --preset, --always "
-                               "или --sleep")
+                    raise Stop("что поменять? --summary, --price, --free, --preset, --always, "
+                               "--sleep, --own или --network")
                 entry = looma.entries.update(entry["id"], changes)
             elif action == "publish":
                 entry = looma.entries.publish(entry["id"])
@@ -806,6 +817,10 @@ def parser() -> argparse.ArgumentParser:
                    help="add, set: держать одну реплику всегда (время карт идёт в расходы)")
     p.add_argument("--sleep", action="store_true",
                    help="set: разрешить модели засыпать без запросов")
+    p.add_argument("--own", action="store_true",
+                   help="add, set: держать модель только на своих узлах (раздел «Узлы»)")
+    p.add_argument("--network", action="store_true",
+                   help="set: разрешить модели вставать и на узлы сети")
     p.add_argument("--yes", action="store_true", help="delete: подтвердить удаление")
 
     p = command("engine", cmd_engine, "свои движки и расширения: подать на ревью, открыть "
@@ -820,6 +835,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--path", help="submit: папка с looma-engine.yaml, если он не в корне")
     p.add_argument("--extension", action="store_true",
                    help="submit: это расширение движка (looma-extension.yaml)")
+    p.add_argument("--fee", action="append", metavar="единица=рубли",
+                   help="submit: доля автора движка с чужих вызовов за 1M токенов: in и out; "
+                        "можно несколько раз")
 
     p = command("check", cmd_check, "запрос к вебу сервиса: код, время, начало ответа",
                 app=True)

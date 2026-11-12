@@ -1,6 +1,6 @@
 [project]
 name = "loomafloat"
-version = "0.4.0"
+version = "0.4.1"
 description = "Looma Float для авторов сервисов и ИИ-агентов: CLI `looma`, SDK вызовов моделей, MCP-сервер и skills переноса проектов"
 readme = "README.md"
 license = "MIT"

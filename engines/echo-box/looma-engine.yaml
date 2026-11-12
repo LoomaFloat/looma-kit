@@ -1,0 +1,26 @@
+# Тот же учебный движок, но образом: площадка собирает его по Dockerfile и
+# запускает в песочнице на своих машинах. Ревью кода такому движку не нужно.
+name: echo-box
+title: Учебный движок в песочнице
+text: Повторяет последнее сообщение. Образец движка, который собирается образом.
+kinds: [text]
+image:
+  dockerfile: Dockerfile
+  port: 8000
+weights: none
+requires:
+  device: [cuda, cpu]
+  ram_gib: 1
+  cpus: 1
+fields:
+  - key: prefix
+    label: Приставка к ответу
+    type: text
+    default: ""
+    hint: Текст перед каждым ответом.
+  - key: repeat
+    label: Сколько раз повторить
+    type: int
+    min: 1
+    max: 5
+    default: 1

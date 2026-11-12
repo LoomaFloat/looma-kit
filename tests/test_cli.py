@@ -499,3 +499,48 @@ def test_own_engine_from_repository_to_a_model(api, capsys):
     sent = json.loads([c for c in state.calls if c[:2] == ("POST", "/api/services")][-1][3])
     assert sent == {"name": "parrot", "min_replicas": 0, "max_replicas": 1, "repeat": 2,
                     "engine": "anna/echo"}
+
+
+def test_model_on_own_nodes_and_engine_fee(api, capsys):
+    base, state = api
+    login(base, capsys)
+    state.handle = "anna"
+    code, out, err = run(capsys, "engine", "submit", "--repo", "https://github.com/anna/echo",
+                         "--commit", "c" * 40, "--fee", "in=1", "--fee", "out=2.5")
+    assert code == 0, err
+    assert "доля: вход 1,00 ₽, выход 2,50 ₽ за 1M токенов" in out
+    sent = json.loads([c for c in state.calls if c[:2] == ("POST", "/api/layers")][-1][3])
+    assert sent["fee"] == {"price_in": 100, "price_out": 250}
+    code, _out, err = run(capsys, "engine", "submit", "--repo", "https://github.com/anna/echo",
+                          "--commit", "c" * 40, "--fee", "image=5")
+    assert code == 1 and "in и out" in err
+
+    code, out, err = run(capsys, "model", "add", "parrot", "--engine", "anna/echo", "--own")
+    assert code == 0, err
+    assert "узлы: только свои" in out
+    sent = json.loads([c for c in state.calls if c[:2] == ("POST", "/api/services")][-1][3])
+    assert sent["contours"] == ["own"]
+    code, out, _err = run(capsys, "model", "set", "parrot", "--network")
+    assert code == 0 and "узлы: только свои" not in out
+    sent = json.loads([c for c in state.calls if c[0] == "PATCH"][-1][3])
+    assert sent == {"contours": None}
+    code, out, _err = run(capsys, "model", "set", "parrot", "--own")
+    assert code == 0 and "узлы: только свои" in out
+
+
+def test_image_engine_states_in_the_list(api, capsys):
+    base, state = api
+    login(base, capsys)
+    state.handle = "anna"
+    state.layers = [{"ref": "anna/box", "kind": "engine", "title": "Образ", "public": False,
+                     "approved": None, "versions": [
+                         {"number": 2, "status": "pending", "note": "", "form": "image",
+                          "build": "building", "source": {"commit": "e" * 40}},
+                         {"number": 1, "status": "rejected", "form": "image", "build": "failed",
+                          "note": "сборка не удалась: exited with code 1",
+                          "log": "step 3/5\npip: no such package", "source": {"commit": "d" * 40}}]}]
+    code, out, _err = run(capsys, "engine")
+    assert code == 0
+    assert "версия 2: образ собирается" in out and "версия 1: образ не собран" in out
+    assert "сборка: сборка не удалась: exited with code 1" in out
+    assert "pip: no such package" in out and "ревью" not in out
