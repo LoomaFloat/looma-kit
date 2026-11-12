@@ -4,7 +4,7 @@ description: Сервисы на площадке Looma Float. Деплой, sta
 license: MIT
 compatibility: Нужны CLI looma (github.com/LoomaFloat/looma-kit) и вход `looma login`; MCP-сервер `looma mcp` по желанию.
 metadata:
-  version: "0.4.1"
+  version: "0.4.2"
   homepage: "https://github.com/LoomaFloat/looma-kit"
 ---
 

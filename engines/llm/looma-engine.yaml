@@ -1,0 +1,29 @@
+# Настоящий движок: чат на открытых весах с HuggingFace через transformers.
+# Код проходит ревью площадки и после подписи едет на узлы сети и на свои узлы.
+name: llm
+title: Языковая модель на transformers
+text: Чат на открытых весах с HuggingFace. Модель целиком грузится на одну видеокарту.
+kinds: [text]
+package: llm_engine
+command: [python, -m, llm_engine.server]
+requirements: requirements.txt
+weights: hf
+requires:
+  device: [cuda, mps, cpu]
+  vram_gib: 4      # нижняя граница; автор модели называет память под свои веса
+  ram_gib: 8
+fields:
+  - key: max_tokens
+    label: Предел длины ответа, токенов
+    type: int
+    min: 16
+    max: 8192
+    default: 512
+    hint: Запрос может просить меньше, но не больше.
+  - key: dtype
+    label: Точность весов
+    type: select
+    options: [auto, float16, bfloat16, float32]
+    default: auto
+    level: advanced
+    hint: auto берёт float16 на видеокарте и float32 на процессоре.

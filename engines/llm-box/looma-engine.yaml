@@ -1,0 +1,31 @@
+# Тот же движок языковой модели, но образом: площадка собирает его по
+# Dockerfile и запускает в песочнице на своей машине с видеокартой.
+name: llm-box
+title: Языковая модель на transformers, образом
+text: Чат на открытых весах с HuggingFace. Тот же движок, что llm, собранный образом для песочницы.
+kinds: [text]
+image:
+  dockerfile: Dockerfile
+  port: 8000
+weights: hf
+requires:
+  device: [cuda]
+  cuda: "12.8"     # под эту CUDA собран torch в образе
+  vram_gib: 4      # нижняя граница; автор модели называет память под свои веса
+  ram_gib: 16      # в песочнице это предел: хватить должно на загрузку весов
+  cpus: 4
+fields:
+  - key: max_tokens
+    label: Предел длины ответа, токенов
+    type: int
+    min: 16
+    max: 8192
+    default: 512
+    hint: Запрос может просить меньше, но не больше.
+  - key: dtype
+    label: Точность весов
+    type: select
+    options: [auto, float16, bfloat16, float32]
+    default: auto
+    level: advanced
+    hint: auto берёт float16 на видеокарте и float32 на процессоре.

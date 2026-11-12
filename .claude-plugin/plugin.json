@@ -1,7 +1,7 @@
 {
   "name": "looma",
   "displayName": "Looma",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Перенос проектов на площадку Looma Float и работа с сервисами: оценка, план, переделка под looma.yaml и модели Looma Float, деплой, проверка, отчёт, публикация в каталоге. Skills looma-port и looma-apps и MCP-сервер looma.",
   "author": { "name": "Looma Float", "url": "https://loomafloat.ru" },
   "homepage": "https://loomafloat.ru",
