@@ -4,7 +4,7 @@ description: Перенос проекта на площадку Looma Float (lo
 license: MIT
 compatibility: Нужны Python 3.10+, терминал и CLI looma (github.com/LoomaFloat/looma-kit). Без CLI работают только оценка и план.
 metadata:
-  version: "0.4.2"
+  version: "0.4.3"
   homepage: "https://github.com/LoomaFloat/looma-kit"
 ---
 
