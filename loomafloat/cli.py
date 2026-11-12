@@ -810,8 +810,8 @@ def parser() -> argparse.ArgumentParser:
                    help="add (с --base), set: настройка: system, template, inputs, params")
     p.add_argument("--summary", help="add, set: одна строка о модели")
     p.add_argument("--price", action="append", metavar="единица=рубли",
-                   help="set: цена, можно несколько раз: in и out за 1M токенов, image за "
-                        "изображение, second за секунду видео")
+                   help="set: цена, можно несколько раз: call за вызов модели со своим API, "
+                        "in и out за 1M токенов, image за изображение, second за секунду видео")
     p.add_argument("--free", action="store_true", help="set: убрать цену")
     p.add_argument("--always", action="store_true",
                    help="add, set: держать одну реплику всегда (время карт идёт в расходы)")
@@ -836,8 +836,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--extension", action="store_true",
                    help="submit: это расширение движка (looma-extension.yaml)")
     p.add_argument("--fee", action="append", metavar="единица=рубли",
-                   help="submit: доля автора движка с чужих вызовов за 1M токенов: in и out; "
-                        "можно несколько раз")
+                   help="submit: доля автора движка с чужих вызовов: call за вызов, in и out "
+                        "за 1M токенов; можно несколько раз")
 
     p = command("check", cmd_check, "запрос к вебу сервиса: код, время, начало ответа",
                 app=True)

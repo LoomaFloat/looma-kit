@@ -1,0 +1,22 @@
+# Движок со своим API: общий случай. Площадка передаёт службе запросы как
+# есть и не разбирает ни их, ни ответы; что считать и как отвечать, решает
+# сам движок.
+name: own-api
+title: Движок со своим API
+text: Образец службы со своими адресами. Считает хеш присланных данных, ищет простые числа и отдаёт ответ по частям.
+kinds: [api]
+package: own_api
+command: [python, -m, own_api.server]
+requirements: requirements.txt
+weights: none
+requires:
+  device: [cuda, mps, cpu]
+  ram_gib: 1
+fields:
+  - key: limit
+    label: Предел для поиска простых чисел
+    type: int
+    min: 1000
+    max: 50000000
+    default: 5000000
+    hint: Запрос с большим числом служба отклонит.

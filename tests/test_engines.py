@@ -134,3 +134,47 @@ def test_llm_request_limits(llm):
         == 2.0
     assert llm.text_of([{"type": "text", "text": "a"}, {"type": "image_url"}, {"text": "b"}]) \
         == "ab"
+
+
+# ------------------------------------------------------- движок со своим API
+@pytest.fixture
+def own_api():
+    """Служба образца `own-api`: свои адреса, свой ответ, своя единица счёта."""
+    spec = importlib.util.spec_from_file_location(
+        "own_api_server_under_test", ENGINES / "own-api" / "own_api" / "server.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), module.Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    module.base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    yield module
+    httpd.shutdown()
+    sys.modules.pop(spec.name, None)
+
+
+def _raw(module, method, path, data=None):
+    request = urllib.request.Request(module.base + path, data=data, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as answer:
+            return answer.status, dict(answer.headers), answer.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, dict(exc.headers), exc.read()
+
+
+def test_own_api_serves_its_own_routes(own_api):
+    assert _raw(own_api, "GET", "/health")[0] == 200
+    status, _head, body = _raw(own_api, "POST", "/hash", b"\x00\x01binary\xff")
+    assert status == 200 and json.loads(body)["bytes"] == 9
+    status, head, body = _raw(own_api, "POST", "/primes?upto=3000000")
+    assert status == 200 and json.loads(body)["primes"] == 216816
+    # Своя единица счёта: миллионы проверенных чисел.
+    assert head["X-Looma-Units"] == "3"
+    assert _raw(own_api, "POST", "/primes?upto=1000")[1]["X-Looma-Units"] == "1"
+    # Отказ: статус 400 и выше площадка клиенту не засчитает.
+    status, head, _body = _raw(own_api, "POST", "/primes?upto=1")
+    assert status == 422 and "X-Looma-Units" not in head
+    status, _head, body = _raw(own_api, "GET", "/count?to=3")
+    assert status == 200 and body == b"1\n2\n3\n"
+    assert _raw(own_api, "GET", "/nothing")[0] == 404
+    assert own_api.primes_upto(100) == 25

@@ -145,8 +145,10 @@ TOOLS = [
          "commit": {"type": "string", "description": "коммит целиком, 40 знаков"},
          "path": {"type": "string", "description": "папка с манифестом, если он не в корне"},
          "extension": {"type": "boolean", "description": "это расширение движка"},
-         "fee": {"type": "object", "description": "доля автора движка с чужих вызовов, копейки "
-                                                  "за 1M токенов: {price_in, price_out}"}},
+         "fee": {"type": "object", "description": "доля автора движка с чужих вызовов, "
+                                                  "копейки: {price_call} за вызов модели со "
+                                                  "своим API, {price_in, price_out} за 1M "
+                                                  "токенов у модели чата"}},
          "required": ["repo", "commit"]}},
     {"name": "looma_engine_share",
      "description": "Открыть свой одобренный движок или расширение другим авторам (public: "
@@ -155,7 +157,8 @@ TOOLS = [
          "name": {"type": "string"}, "public": {"type": "boolean"}},
          "required": ["name", "public"]}},
     {"name": "looma_model_set",
-     "description": "Поменять свою модель: summary; price в копейках ({price_in, price_out} за "
+     "description": "Поменять свою модель: summary; price в копейках (price_call за вызов "
+                    "модели со своим API, {price_in, price_out} за "
                     "1M токенов, price_image, price_second; {} убирает цену; у настройки это "
                     "надбавка к цене основы); preset (только пока настройка не опубликована); "
                     "always (держать реплику всегда или разрешить засыпать).",

@@ -544,3 +544,17 @@ def test_image_engine_states_in_the_list(api, capsys):
     assert "версия 2: образ собирается" in out and "версия 1: образ не собран" in out
     assert "сборка: сборка не удалась: exited with code 1" in out
     assert "pip: no such package" in out and "ревью" not in out
+
+
+def test_цена_и_доля_за_вызов():
+    """Общая единица: модель со своим API считается вызовами, а не токенами."""
+    from loomafloat import ops
+
+    assert ops.price_of(["call=1.5"]) == {"price_call": 150}
+    assert ops.fee_of(["call=0,2", "in=1"]) == {"price_call": 20, "price_in": 100}
+    assert ops.fee_text({"price_call": 20}) == "0,20 ₽ за вызов"
+    assert "за вызов" in ops.fee_text({"price_call": 20, "price_out": 300}) \
+        and "за 1M токенов" in ops.fee_text({"price_call": 20, "price_out": 300})
+    assert ops.entry_price({"price": {"price_call": 150}}) == "за вызов 1,50 ₽"
+    with pytest.raises(ops.EntryError, match="call"):
+        ops.fee_of(["image=1"])

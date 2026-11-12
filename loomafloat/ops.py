@@ -257,9 +257,9 @@ ENTRY_STATES = {"ready": "отвечает", "starting": "поднимается
                 "unavailable": "не отвечает"}
 #: Единицы цены модели: имя в CLI → поле API (копейки).
 PRICE_UNITS = {"in": "price_in", "out": "price_out", "image": "price_image",
-               "second": "price_second"}
+               "second": "price_second", "call": "price_call"}
 _UNIT_TITLES = {"price_in": "вход", "price_out": "выход", "price_image": "за изображение",
-                "price_second": "за секунду видео"}
+                "price_second": "за секунду видео", "price_call": "за вызов"}
 
 
 class EntryError(OpError):
@@ -408,18 +408,23 @@ IMAGE_STATES = {"pending": "образ собирается", "approved": "об�
 def fee_text(fee: Optional[dict]) -> str:
     """Доля автора движка словами; пусто — доли нет."""
     fee = fee or {}
-    if not fee.get("price_in") and not fee.get("price_out"):
-        return ""
-    return (f"вход {rubles(fee.get('price_in') or 0)}, выход {rubles(fee.get('price_out') or 0)} "
-            "за 1M токенов")
+    parts = []
+    if fee.get("price_call"):
+        parts.append(f"{rubles(fee['price_call'])} за вызов")
+    if fee.get("price_in") or fee.get("price_out"):
+        parts.append(f"вход {rubles(fee.get('price_in') or 0)}, выход "
+                     f"{rubles(fee.get('price_out') or 0)} за 1M токенов")
+    return "; ".join(parts)
 
 
 def fee_of(pairs) -> dict:
-    """`in=1 out=3` (рубли за 1M токенов) → доля автора движка в копейках."""
+    """`call=0.2` (рубли за вызов) или `in=1 out=3` (рубли за 1M токенов) →
+    доля автора движка в копейках."""
     fee = price_of(pairs)
-    extra = sorted(set(fee) - {"price_in", "price_out"})
+    extra = sorted(set(fee) - {"price_in", "price_out", "price_call"})
     if extra:
-        raise EntryError("доля автора движка считается за токены: in и out")
+        raise EntryError("доля автора движка считается за вызов (call) или за токены "
+                         "(in и out)")
     return fee
 
 
