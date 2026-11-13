@@ -527,6 +527,20 @@ def test_model_on_own_nodes_and_engine_fee(api, capsys):
     code, out, _err = run(capsys, "model", "set", "parrot", "--own")
     assert code == 0 and "узлы: только свои" in out
 
+    # Перевести модель на другую версию движка: вместе с версией можно
+    # поменять и поля движка; пустое значение убирает поле.
+    code, _out, err = run(capsys, "model", "set", "parrot", "--engine-version", "latest")
+    assert code == 0, err
+    assert json.loads([c for c in state.calls if c[0] == "PATCH"][-1][3]) == \
+        {"engine_version": "latest"}
+    code, _out, err = run(capsys, "model", "set", "parrot", "--engine-version", "3", "--set",
+                          "repeat=2", "--set", "prefix=")
+    assert code == 0, err
+    assert json.loads([c for c in state.calls if c[0] == "PATCH"][-1][3]) == \
+        {"engine_version": 3, "fields": {"repeat": 2, "prefix": None}}
+    code, _out, err = run(capsys, "model", "set", "parrot", "--engine-version", "новая")
+    assert code == 1 and "номер версии или latest" in err
+
 
 def test_image_engine_states_in_the_list(api, capsys):
     base, state = api

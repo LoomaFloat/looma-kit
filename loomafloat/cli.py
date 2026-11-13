@@ -234,6 +234,13 @@ def _model_lines(entry: dict) -> list:
     else:
         if row.get("engine"):
             lines.append(f"  движок: {row['engine']}, версия {row.get('engine_version')}")
+        newer = (entry.get("engine_update") or {}).get("version")
+        if newer:
+            lines.append(f"  вышла версия {newer} движка: `looma model set {row['name']} "
+                         f"--engine-version {newer}`")
+        if any(r.get("outdated") for r in entry.get("replicas") or []):
+            lines.append("  реплики переходят на новую версию: прежняя отвечает, пока новая "
+                         "не поднимется")
         if row.get("repo"):
             lines.append(f"  веса: {row['repo']}")
         if (entry.get("recipe") or {}).get("adapter"):
@@ -381,9 +388,19 @@ def cmd_model(args) -> None:
                     changes["contours"] = ["own"]
                 elif args.network:
                     changes["contours"] = None
+                if args.engine_version:
+                    version = args.engine_version.strip().lower()
+                    if version != "latest" and not version.isdigit():
+                        raise Stop("--engine-version: номер версии или latest")
+                    changes["engine_version"] = version if version == "latest" else int(version)
+                if args.set and action == "set":
+                    # Поля движка: меняются вместе с версией или сами по себе;
+                    # `имя=` убирает поле.
+                    changes["fields"] = {key: (None if value == "" else value)
+                                         for key, value in ops.recipe_of(args.set).items()}
                 if not changes:
                     raise Stop("что поменять? --summary, --price, --free, --preset, --always, "
-                               "--sleep, --own или --network")
+                               "--sleep, --own, --network или --engine-version")
                 entry = looma.entries.update(entry["id"], changes)
             elif action == "publish":
                 entry = looma.entries.publish(entry["id"])
@@ -803,7 +820,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--repo", help="add, check: репозиторий весов на HuggingFace")
     p.add_argument("--engine", help="add, check: движок (по умолчанию torch)")
     p.add_argument("--set", action="append", metavar="имя=значение",
-                   help="add, check: параметр движка, можно несколько раз (stages=2)")
+                   help="add, check, set: параметр движка, можно несколько раз (stages=2); "
+                        "у set пустое значение убирает поле")
+    p.add_argument("--engine-version", metavar="номер",
+                   help="set: перевести модель на другую версию движка автора (номер или "
+                        "latest); имя, цена и публикация остаются, реплики заменяются сами")
     p.add_argument("--base", help="add: модель каталога, поверх которой заводится запись")
     p.add_argument("--adapter", help="add: адаптер LoRA (с --base): имя или номер")
     p.add_argument("--preset", metavar="файл.json",

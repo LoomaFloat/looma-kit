@@ -161,13 +161,19 @@ TOOLS = [
                     "модели со своим API, {price_in, price_out} за "
                     "1M токенов, price_image, price_second; {} убирает цену; у настройки это "
                     "надбавка к цене основы); preset (только пока настройка не опубликована); "
-                    "always (держать реплику всегда или разрешить засыпать).",
+                    "always (держать реплику всегда или разрешить засыпать); engine_version "
+                    "(перевести модель на другую версию движка автора: имя, цена и публикация "
+                    "остаются, реплики заменяются сами).",
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string"}, "summary": {"type": "string"},
          "price": {"type": "object"}, "preset": {"type": "object"},
          "always": {"type": "boolean"},
          "own_nodes": {"type": "boolean", "description": "true — только свои узлы, false — "
-                                                         "ещё и узлы сети"}},
+                                                         "ещё и узлы сети"},
+         "engine_version": {"description": "номер одобренной версии движка автора или "
+                                           "\"latest\""},
+         "fields": {"type": "object", "description": "поля движка: имя и значение; null "
+                                                     "убирает поле"}},
          "required": ["name"]}},
     {"name": "looma_model_publish",
      "description": "Подать свою модель на публикацию: после проверки площадки её зовут все "
@@ -417,9 +423,11 @@ class Server:
 
     def looma_model_set(self, name: str, summary: Optional[str] = None,
                         price: Optional[dict] = None, preset: Optional[dict] = None,
-                        always: Optional[bool] = None, own_nodes: Optional[bool] = None):
+                        always: Optional[bool] = None, own_nodes: Optional[bool] = None,
+                        engine_version=None, fields: Optional[dict] = None):
         entry = ops.find_entry(self.looma, name)
-        changes = {k: v for k, v in (("summary", summary), ("price", price), ("preset", preset))
+        changes = {k: v for k, v in (("summary", summary), ("price", price), ("preset", preset),
+                                     ("engine_version", engine_version), ("fields", fields))
                    if v is not None}
         if always is not None:
             changes.update({"min_replicas": 1, "max_replicas": max(1, entry["max_replicas"])}
@@ -427,7 +435,8 @@ class Server:
         if own_nodes is not None:
             changes["contours"] = ["own"] if own_nodes else None
         if not changes:
-            raise ops.OpError("что поменять? summary, price, preset, always или own_nodes")
+            raise ops.OpError("что поменять? summary, price, preset, always, own_nodes или "
+                              "engine_version")
         return self._model(self.looma.entries.update(entry["id"], changes))
 
     def looma_model_publish(self, name: str):
