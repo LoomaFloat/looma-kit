@@ -153,8 +153,9 @@ def own_api():
     sys.modules.pop(spec.name, None)
 
 
-def _raw(module, method, path, data=None):
-    request = urllib.request.Request(module.base + path, data=data, method=method)
+def _raw(module, method, path, data=None, headers=None):
+    request = urllib.request.Request(module.base + path, data=data, method=method,
+                                     headers=headers or {})
     try:
         with urllib.request.urlopen(request, timeout=10) as answer:
             return answer.status, dict(answer.headers), answer.read()
@@ -178,3 +179,38 @@ def test_own_api_serves_its_own_routes(own_api):
     assert status == 200 and body == b"1\n2\n3\n"
     assert _raw(own_api, "GET", "/nothing")[0] == 404
     assert own_api.primes_upto(100) == 25
+
+
+def test_own_api_long_computation(own_api):
+    """Долгое вычисление: служба принимает запрос ответом 202, считает в фоне и
+    отвечает о ходе по адресу из Location, пока не отдаст итог."""
+    import hashlib
+    import time
+
+    links = {"numbers": {"url": own_api.base + "/count?to=2", "bytes": 4}}
+    sent = {"X-Looma-Job": "run_abc", "X-Looma-Files": json.dumps(links)}
+    status, head, body = _raw(own_api, "POST", "/slow?seconds=1", headers=sent)
+    assert status == 202 and head["Location"] == "/slow/run_abc"
+    assert head["X-Looma-Progress"] == "0" and json.loads(body) == {"accepted": "run_abc"}
+    # Тот же номер задания второй раз вычисление не начинает.
+    assert _raw(own_api, "POST", "/slow?seconds=1", headers=sent)[1]["Location"] == "/slow/run_abc"
+    assert len(own_api.SLOW) == 1
+
+    status, head, _body = _raw(own_api, "GET", "/slow/run_abc")
+    assert status == 202 and head["Retry-After"] == "2" and "X-Looma-Progress" in head
+    deadline = time.time() + 10
+    while status == 202 and time.time() < deadline:
+        time.sleep(0.2)
+        status, head, body = _raw(own_api, "GET", "/slow/run_abc")
+    assert status == 200 and head["X-Looma-Units"] == "1"
+    # Приложенный файл служба скачала сама, по ссылке из задания.
+    assert json.loads(body) == {"seconds": 1, "files": {"numbers": {
+        "bytes": 4, "sha256": hashlib.sha256(b"1\n2\n").hexdigest()}}}
+
+    assert _raw(own_api, "GET", "/slow/unknown")[0] == 404
+    assert _raw(own_api, "POST", "/slow?seconds=0")[0] == 422
+    # Снятое задание дальше не считается.
+    _raw(own_api, "POST", "/slow?seconds=600", headers={"X-Looma-Job": "run_long"})
+    assert _raw(own_api, "DELETE", "/slow/run_long")[0] == 200
+    assert own_api.SLOW["run_long"]["cancelled"] is True
+    assert _raw(own_api, "DELETE", "/slow/unknown")[0] == 404

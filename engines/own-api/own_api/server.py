@@ -22,8 +22,17 @@
 `X-Looma-Units`. Здесь поиск простых чисел считается по миллионам проверенных
 чисел, остальное по вызову. Ответ со статусом 400 и выше не считается.
 
+Долгое вычисление. Клиент может не ждать ответа: тот же запрос с заголовком
+`Prefer: respond-async` площадка принимает заданием и доводит до конца сама.
+Службе для этого ничего делать не нужно, пока она отвечает быстрее десяти
+минут. Вычисление дольше служба принимает сама (`/slow` ниже): отвечает 202 и
+адресом в `Location`, а площадка спрашивает этот адрес, пока не получит
+итоговый ответ. С заданием приходят номер (`X-Looma-Job`) и ссылки на файлы
+клиента (`X-Looma-Files`).
+
     LOOMA_SERVE_PORT=8000 python -m own_api.server
     curl -X POST 'http://127.0.0.1:8000/primes?upto=100000'
+    curl -i -X POST 'http://127.0.0.1:8000/slow?seconds=5'
 """
 
 from __future__ import annotations
@@ -31,7 +40,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
+import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -51,6 +63,43 @@ def primes_upto(n: int) -> int:
         if sieve[value]:
             sieve[value * value::value] = bytearray(len(range(value * value, n + 1, value)))
     return sum(sieve)
+
+
+#: Долгие вычисления этой службы: номер → состояние. Живут в памяти процесса;
+#: служба, которой нужно пережить свой перезапуск, пишет их в `LOOMA_CACHE_DIR`.
+SLOW: dict = {}
+SLOW_LOCK = threading.Lock()
+MAX_SLOW_S = 3600
+
+
+def fetch(link: dict) -> dict:
+    """Скачать файл клиента по ссылке из задания и посчитать его хеш. Файл
+    идёт из хранилища площадки прямо сюда, по частям: он может быть большим."""
+    digest, size = hashlib.sha256(), 0
+    with urllib.request.urlopen(link["url"], timeout=60) as answer:
+        while True:
+            piece = answer.read(1 << 20)
+            if not piece:
+                break
+            digest.update(piece)
+            size += len(piece)
+    return {"bytes": size, "sha256": digest.hexdigest()}
+
+
+def slow(number: str) -> None:
+    """Само вычисление: работа шагами по секунде. Идёт своим потоком, а о
+    ходе и результате служба отвечает, когда её спрашивают."""
+    state = SLOW[number]
+    try:
+        files = {name: fetch(link) for name, link in state["links"].items()}
+        for _second in range(state["total"]):
+            if state["cancelled"]:
+                return
+            time.sleep(1)
+            state["done"] += 1
+        state["result"] = {"seconds": state["total"], "files": files}
+    except Exception as exc:                      # отказ тоже итог: его надо отдать
+        state["error"] = f"{type(exc).__name__}: {exc}"
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -83,11 +132,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"model": MODEL_ID, "limit": LIMIT, "routes": [
                 "POST /hash — sha256 присланных данных",
                 "POST /primes?upto=N — сколько простых чисел не больше N",
-                "GET /count?to=N — числа от 1 до N по одному, по мере готовности"]})
+                "GET /count?to=N — числа от 1 до N по одному, по мере готовности",
+                "POST /slow?seconds=N — долгое вычисление: ответ 202, итог по адресу из Location"]})
         elif url.path == "/count":
             self._count(url)
+        elif url.path.startswith("/slow/"):
+            self._slow_state(url.path[len("/slow/"):])
         else:
             self._json(404, {"error": "нет такого адреса; список: GET /"})
+
+    def do_DELETE(self) -> None:                  # noqa: N802
+        """Площадка сообщает, что клиент снял задание: считать дальше незачем."""
+        state = SLOW.get(urlsplit(self.path).path[len("/slow/"):])
+        if state is not None:
+            state["cancelled"] = True
+        self._json(200 if state is not None else 404, {"cancelled": state is not None})
 
     def do_POST(self) -> None:                    # noqa: N802
         url = urlsplit(self.path)
@@ -97,9 +156,50 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"sha256": hashlib.sha256(data).hexdigest(), "bytes": len(data)})
         elif url.path == "/primes":
             self._primes(url)
+        elif url.path == "/slow":
+            self._slow(url)
         else:
             self._body()
             self._json(404, {"error": "нет такого адреса; список: GET /"})
+
+    def _slow(self, url) -> None:
+        """Принять долгое вычисление: начать его и сразу ответить, где спросить итог."""
+        self._body()
+        try:
+            seconds = int(parse_qs(url.query).get("seconds", ["30"])[0])
+        except ValueError:
+            seconds = 0
+        if not 1 <= seconds <= MAX_SLOW_S:
+            self._json(422, {"error": f"seconds: целое от 1 до {MAX_SLOW_S}"})
+            return
+        try:
+            links = json.loads(self.headers.get("X-Looma-Files") or "{}")
+        except ValueError:
+            links = {}
+        # Номер задания площадки служит и номером вычисления: если площадка
+        # пришлёт тот же запрос ещё раз, второе вычисление не начнётся.
+        number = self.headers.get("X-Looma-Job") or uuid.uuid4().hex
+        with SLOW_LOCK:
+            if number not in SLOW:
+                SLOW[number] = {"total": seconds, "done": 0, "links": links, "result": None,
+                                "error": "", "cancelled": False}
+                threading.Thread(target=slow, args=(number,), daemon=True).start()
+        self._json(202, {"accepted": number}, Location=f"/slow/{number}", X_Looma_Progress="0")
+
+    def _slow_state(self, number: str) -> None:
+        state = SLOW.get(number)
+        if state is None:
+            self._json(404, {"error": "такого вычисления нет: служба перезапускалась"})
+        elif state["error"]:
+            self._json(500, {"error": state["error"]})
+        elif state["result"] is None:
+            # Ещё считается: 202, сколько сделано и когда спросить снова.
+            percent = 100 * state["done"] // state["total"]
+            self._json(202, {"done": state["done"], "total": state["total"]},
+                       X_Looma_Progress=str(percent), Retry_After="2")
+        else:
+            # Итог: обычный ответ. Своя единица счёта здесь секунды работы.
+            self._json(200, state["result"], X_Looma_Units=str(state["total"]))
 
     def _primes(self, url) -> None:
         self._body()
