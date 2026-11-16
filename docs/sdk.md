@@ -48,6 +48,9 @@ mp4 = looma.video("MiniMax-H3", "A red fox in a snowy forest", quality="fast").c
 | `embed(model, texts, *, input_type=None, dimensions=None)` | векторы текстов по порядку; строка даёт список из одного вектора. `input_type`: `query` для поиска, `document` для индексации; префиксы моделей e5 и Qwen3 подставляет сервер. `dimensions` укорачивает вектор у моделей с Matryoshka |
 | `rerank(model, query, documents, *, top_n=None)` | документы по убыванию оценки: список `{"index", "relevance_score"}`, где `index` указывает в `documents`; `top_n` оставляет столько лучших |
 | `video(model, prompt="", *, seconds=5, wait=False, **params)` | задание на видео; с `wait=True` дождаться готового ролика. Поля как у `POST /v1/videos`: `quality`, `size`, `seed`, `conditions` и другие |
+| `run(model, path="/", *, method="POST", body=None, headers=None, wait=True)` | вызов модели со своим API (движок автора, `автор/модель`): запрос уходит службе как есть, ответ `Answer` (`status`, `headers`, `content`, `text`, `json()`). `body`: байты, строка или объект (уйдёт JSON). С `wait=False` долгое вычисление: ответ `Job` |
+| `job(id)` | задание по номеру (`run_…`): `status`, `progress`, `refresh()`, `wait()`, `content()`, `save(путь)`, `cancel()` |
+| `income(period="month")` | доход автора: сервисы, свои модели, доли движков, узлы (ключом автора, не токеном сервиса) |
 | `models()` | модели каталога |
 | `for_client(client)` | копия `Looma` с тем же ключом и адресом; её вызовы моделей записываются на клиента каталога |
 | `charge(event, client=None, *, quantity=1, id=None)` | отметить событие из раздела `events` для клиента |
@@ -114,6 +117,27 @@ channels:
 MCP-сервер сервиса находится по адресу `https://api.loomafloat.ru/mcp/<имя>`, клиенты
 подключаются к нему со своим ключом. Вызов инструмента приходит как POST на его `path` с
 `X-Looma-Client`. Подробно: [Каналы](https://docs.loomafloat.ru/authors/channels/).
+
+## Модель со своим API
+
+Модель на движке автора со своим API (`kinds: [api]`) сервис объявляет в `gpu` так же, как
+модели сети, и зовёт методом `run`. Площадка не разбирает ни запрос, ни ответ.
+
+```python
+answer = looma.run("anna/solver", "/primes?upto=1000000")
+count = answer.json()["count"]
+
+job = looma.for_client(client).run("anna/render", "/video", body={"scene": 7}, wait=False)
+save(job.id)                       # номер в базу: процесс сервиса может уснуть
+...
+job = looma.job(saved_id)
+if job.status == "succeeded":
+    mp4 = job.content()
+```
+
+Ответ службы со статусом 400 и выше SDK поднимает `LoomaError` с её текстом. Долгое
+задание кончилось отказом службы: `job.doc["result"]["status"]` и тело в `content()`.
+Как устроены движки и долгие вычисления: [Свой движок](engines.md#long).
 
 ## Видео
 

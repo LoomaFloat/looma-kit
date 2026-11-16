@@ -51,6 +51,17 @@ INSTRUCTIONS = """Looma Float размещает сервисы с GPU-моде�
 7. Перенос чужого проекта на площадку — по skill looma-port: looma_assess
    (что мешает), план пользователю, правки, looma_validate (манифест без
    релиза), looma_deploy, looma_check, отчёт. Модели для gpu: — из looma_models.
+8. С чего начать с новым проектом или вопросом автора — skill looma: что перед
+   тобой (сервис, движок, модель, то и другое), какие возможности площадки ему
+   подходят, по какому пути идти.
+9. Свой код на видеокарте (движок): looma_engine_try ставит папку на свои узлы
+   автора без ревью; проверка — looma_model_add на этом движке, затем
+   looma_call. В сеть и другим авторам — только после ревью (looma_engine_submit
+   по просьбе пользователя).
+10. Узлы: looma_node_connect даёт команду с ключом. Ключ не пересказывай; команду
+   запускает пользователь на машине с видеокартой (или ты, если он попросил и
+   это его машина). Делиться узлом с сетью и выбирать принимаемый код —
+   только сам владелец в кабинете.
 """
 
 
@@ -92,7 +103,8 @@ TOOLS = [
          "required": ["directory"]}},
     {"name": "looma_models",
      "description": "Модели каталога: имя для gpu: манифеста, тип (text, image, video, "
-                    "embedding, rerank), отвечает или спит, контекст.",
+                    "embedding, rerank), отвечает или спит, контекст, цена в копейках (за 1M "
+                    "токенов, изображение или секунду видео): по ней считается себестоимость.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "looma_model_list",
      "description": "Свои модели автора в каталоге (не модели сети: те в looma_models): имя "
@@ -126,6 +138,8 @@ TOOLS = [
          "always": {"type": "boolean", "description": "держать реплику всегда"},
          "own_nodes": {"type": "boolean", "description": "держать модель только на своих узлах "
                                                          "автора (раздел «Узлы» кабинета)"},
+         "node": {"type": "string", "description": "модель на движке автора: только на этом "
+                                                   "своём узле (looma_node_list)"},
          "handle": {"type": "string", "description": "имя автора, если ещё не задано"}},
          "required": ["name"]}},
     {"name": "looma_engine_list",
@@ -148,8 +162,76 @@ TOOLS = [
          "fee": {"type": "object", "description": "доля автора движка с чужих вызовов, "
                                                   "копейки: {price_call} за вызов модели со "
                                                   "своим API, {price_in, price_out} за 1M "
-                                                  "токенов у модели чата"}},
+                                                  "токенов у модели чата"},
+         "own": {"type": "boolean", "description": "версия без ревью, только на свои узлы "
+                                                   "(как looma_engine_try, но из репозитория)"}},
          "required": ["repo", "commit"]}},
+    {"name": "looma_engine_try",
+     "description": "Поставить свой движок или расширение из папки на свои узлы автора, без "
+                    "ревью и без GitHub: папка с looma-engine.yaml (или looma-extension.yaml) "
+                    "упаковывается и становится новой версией, одобренной сразу. Такая версия "
+                    "работает только на узлах этой учётной записи и не видна другим авторам. "
+                    "Дальше looma_model_add с engine `автор/движок` (или looma_model_set с "
+                    "engine_version), затем looma_call. Для сети и других авторов нужен "
+                    "looma_engine_submit.",
+     "inputSchema": {"type": "object", "properties": {
+         "directory": {"type": "string", "description": "папка движка"}},
+         "required": ["directory"]}},
+    {"name": "looma_node_list",
+     "description": "Свои узлы автора: на связи ли, видеокарта и свободная память, версия "
+                    "агента, делится ли узел с сетью, что на нём работает, какие движки на него "
+                    "встанут и почему нет, начислено за месяц.",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "looma_node_connect",
+     "description": "Подключить новую свою машину с видеокартой: ключ и команда docker run. "
+                    "Нужны драйвер NVIDIA, Docker и NVIDIA Container Toolkit. В команде ключ: он "
+                    "показывается один раз, не пересказывай его в ответах. Узел работает "
+                    "только на автора; делиться им с сетью автор решает в кабинете.",
+     "inputSchema": {"type": "object", "properties": {
+         "label": {"type": "string", "description": "подпись узла, например «домашний ПК»"}}}},
+    {"name": "looma_node_rename",
+     "description": "Поменять подпись своего узла.",
+     "inputSchema": {"type": "object", "properties": {
+         "node": {"type": "string", "description": "узел: имя или подпись"},
+         "title": {"type": "string"}}, "required": ["node", "title"]}},
+    {"name": "looma_node_disconnect",
+     "description": "Отключить свой узел: ключ отзывается, работа на машине снимается. Только по "
+                    "прямой просьбе пользователя; confirm повторяет имя узла.",
+     "inputSchema": {"type": "object", "properties": {
+         "node": {"type": "string"}, "confirm": {"type": "string"}},
+         "required": ["node", "confirm"]}},
+    {"name": "looma_call",
+     "description": "Пробный вызов модели ключом автора: проверить свою модель или движок. "
+                    "Чат: text. Изображение: image_prompt (файл пишется в out). Модель со "
+                    "своим API (`автор/модель`): path, method, body, headers; async=true — "
+                    "долгое вычисление заданием, ответ — номер задания для looma_job. Ответ "
+                    "службы с двоичным телом пишется в out.",
+     "inputSchema": {"type": "object", "properties": {
+         "model": {"type": "string"}, "text": {"type": "string"},
+         "image_prompt": {"type": "string"},
+         "images": {"type": "array", "items": {"type": "string"},
+                    "description": "с image_prompt: исходные изображения для правки (пути к "
+                                   "файлам или ссылки)"},
+         "path": {"type": "string", "description": "путь у службы со строкой запроса"},
+         "method": {"type": "string", "description": "по умолчанию POST"},
+         "body": {"description": "тело: объект уходит JSON, строка — текстом"},
+         "headers": {"type": "object"},
+         "async": {"type": "boolean", "description": "долгое вычисление заданием"},
+         "out": {"type": "string", "description": "файл для изображения или двоичного ответа"}},
+         "required": ["model"]}},
+    {"name": "looma_job",
+     "description": "Задание (run_…): состояние, ход в процентах, ответ службы. wait=true — "
+                    "дождаться (до timeout_s), out — сохранить тело ответа в файл, cancel — "
+                    "снять.",
+     "inputSchema": {"type": "object", "properties": {
+         "id": {"type": "string"}, "wait": {"type": "boolean"},
+         "timeout_s": {"type": "number"}, "out": {"type": "string"},
+         "cancel": {"type": "boolean"}}, "required": ["id"]}},
+    {"name": "looma_income",
+     "description": "Доход автора за период (week, month, all): сервисы, свои модели, движки "
+                    "(доли с чужих вызовов), узлы, отданные сети. Выплат пока нет: это учёт.",
+     "inputSchema": {"type": "object", "properties": {
+         "period": {"type": "string", "enum": ["week", "month", "all"]}}}},
     {"name": "looma_engine_share",
      "description": "Открыть свой одобренный движок или расширение другим авторам (public: "
                     "true) или закрыть (false). Только по прямой просьбе пользователя.",
@@ -173,8 +255,17 @@ TOOLS = [
          "engine_version": {"description": "номер одобренной версии движка автора или "
                                            "\"latest\""},
          "fields": {"type": "object", "description": "поля движка: имя и значение; null "
-                                                     "убирает поле"}},
+                                                     "убирает поле"},
+         "node": {"type": "string", "description": "свой узел для модели на движке автора; "
+                                                   "пустая строка убирает выбор"}},
          "required": ["name"]}},
+    {"name": "looma_model_logs",
+     "description": "Хвост лога реплик своей модели (свежие три запуска): почему движок не "
+                    "встал, упал или отвечает ошибкой. Состояние и ошибка задачи, текст вывода "
+                    "службы. Смотреть после looma_model_add или looma_engine_try, если модель "
+                    "не отвечает.",
+     "inputSchema": {"type": "object", "properties": {
+         "name": {"type": "string"}, "tail": {"type": "integer"}}, "required": ["name"]}},
     {"name": "looma_model_publish",
      "description": "Подать свою модель на публикацию: после проверки площадки её зовут все "
                     "авторы по её цене. Только по прямой просьбе пользователя.",
@@ -379,8 +470,9 @@ class Server:
         return ops.validate(looma if looma.key else None, Path(directory))
 
     def looma_models(self):
-        return [{k: m.get(k) for k in ("id", "kind", "status", "context", "dimensions")
-                 if m.get(k) is not None} for m in self.looma.models()]
+        keep = ("id", "kind", "status", "context", "dimensions", "owned_by", "price_in",
+                "price_out", "price_image", "price_second")
+        return [{k: m.get(k) for k in keep if m.get(k) is not None} for m in self.looma.models()]
 
     def looma_model_list(self):
         doc = self.looma.entries.mine()
@@ -399,10 +491,10 @@ class Server:
     def looma_model_add(self, name: str, repo: str = "", engine: str = "",
                         recipe: Optional[dict] = None, base: str = "", adapter: str = "",
                         preset: Optional[dict] = None, summary: str = "", always: bool = False,
-                        handle: str = "", own_nodes: bool = False):
+                        handle: str = "", own_nodes: bool = False, node: str = ""):
         payload = ops.entry_payload(name=name, repo=repo, engine=engine, recipe=recipe, base=base,
                                     adapter=adapter, preset=preset, summary=summary,
-                                    always=always, own=own_nodes)
+                                    always=always, own=own_nodes, node=node)
         return self._model(ops.add_entry(self.looma, payload, handle))
 
     def looma_engine_list(self):
@@ -410,12 +502,105 @@ class Server:
         return {"handle": doc.get("handle") or "", "engines": doc["layers"]}
 
     def looma_engine_submit(self, repo: str, commit: str, path: str = "",
-                            extension: bool = False, fee: Optional[dict] = None):
+                            extension: bool = False, fee: Optional[dict] = None,
+                            own: bool = False):
+        self._need_handle()
+        return self.looma.engines.submit(repo=repo, commit=commit, path=path,
+                                         kind="extension" if extension else "engine", fee=fee,
+                                         own=own)
+
+    def _need_handle(self) -> None:
         if not self.looma.engines.mine().get("handle"):
             raise ops.OpError("сначала задайте имя автора: с него начинаются имена движков "
                               "(looma_model_add с handle или `looma model name <имя>`)")
-        return self.looma.engines.submit(repo=repo, commit=commit, path=path,
-                                         kind="extension" if extension else "engine", fee=fee)
+
+    def looma_engine_try(self, directory: str):
+        self._need_handle()
+        data, kind, files = ops.pack_engine(Path(directory))
+        made = self.looma.engines.try_archive(data, kind=kind)
+        return {**made, "files": len(files),
+                "next": (f"версия {made.get('submitted')} без ревью, только на своих узлах. "
+                         f"Модель: looma_model_add с engine {made['ref']} (или looma_model_set "
+                         f"с engine_version {made.get('submitted')}), затем looma_call")}
+
+    def looma_node_list(self):
+        doc = self.looma.nodes.mine()
+        keep = ("node_id", "title", "online", "pending", "accepts_tasks", "refusal", "shared",
+                "gpu_name", "device", "gpus_total", "gpus_free", "vram_free_gib",
+                "agent_version", "accepts", "work", "engines", "accrued", "key_id")
+        return {"nodes": [{k: n.get(k) for k in keep} for n in doc["nodes"]],
+                "share": doc.get("share")}
+
+    def looma_node_connect(self, label: str = ""):
+        made = self.looma.nodes.connect(label)
+        return {"node_id": made.get("node_id"), "command": made["command"],
+                "note": "в команде ключ: он показывается один раз, в ответах его не повторяй. "
+                        "Команду запускают на машине с видеокартой (драйвер NVIDIA, Docker, "
+                        "NVIDIA Container Toolkit); через минуту узел виден в looma_node_list"}
+
+    def _node(self, name: str) -> dict:
+        node = self.looma.nodes.find(name)
+        if node is None:
+            raise ops.OpError(f"узла {name!r} у вас нет: looma_node_list покажет свои")
+        return node
+
+    def looma_node_rename(self, node: str, title: str):
+        return self.looma.nodes.rename(self._node(node)["node_id"], title)
+
+    def looma_node_disconnect(self, node: str, confirm: str):
+        found = self._node(node)
+        if confirm != found["node_id"]:
+            raise ops.OpError(f"confirm должен повторять имя узла ({found['node_id']})")
+        self.looma.nodes.disconnect(found["key_id"])
+        return {"node_id": found["node_id"], "disconnected": True}
+
+    def looma_call(self, model: str, text: str = "", image_prompt: str = "", path: str = "",
+                   method: str = "POST", body=None, headers: Optional[dict] = None,
+                   out: str = "", images: Optional[list] = None, **more):
+        wait_not = bool(more.pop("async", False))
+        if more:
+            raise TypeError(f"лишние аргументы: {', '.join(sorted(more))}")
+        if image_prompt:
+            target = Path(out or "image.png")
+            target.write_bytes(self.looma.image(model, image_prompt, images=images or None)[0])
+            return {"model": model, "image": str(target.resolve())}
+        if path or body is not None or wait_not:
+            answer = self.looma.run(model, path or "/", method=method, body=body,
+                                    headers=headers, wait=not wait_not)
+            if hasattr(answer, "doc"):
+                return {"job": answer.doc, "next": f"looma_job id={answer.id} wait=true"}
+            result = {"status": answer.status, "headers": answer.headers}
+            kind = answer.headers.get("content-type", "")
+            if out:
+                Path(out).write_bytes(answer.content)
+                result["saved"] = str(Path(out).resolve())
+            elif kind.startswith(("text/", "application/json")) or not kind:
+                result["body"] = answer.text[:20000]
+            else:
+                result["body"] = f"{len(answer.content)} байт {kind}: сохраните через out"
+            return result
+        return {"model": model, "answer": self.looma.chat(model, text or "Привет!")}
+
+    def looma_job(self, id: str, wait: bool = False, timeout_s: float = 600.0, out: str = "",
+                  cancel: bool = False):
+        job = self.looma.job(id)
+        if cancel:
+            return job.cancel().doc
+        if wait or out:
+            try:
+                job.wait(poll_s=5.0, timeout_s=timeout_s)
+            except LoomaError as exc:
+                if "не готово" in exc.message:
+                    return {**job.doc, "note": f"ещё идёт; спросите позже: {exc.message}"}
+                raise
+        doc = dict(job.doc)
+        if out and (doc.get("result") or {}).get("url"):
+            Path(out).write_bytes(job.content())
+            doc["saved"] = str(Path(out).resolve())
+        return doc
+
+    def looma_income(self, period: str = "month"):
+        return self.looma.income(period)
 
     def looma_engine_share(self, name: str, public: bool):
         layer = ops.find_layer(self.looma, name)
@@ -424,10 +609,12 @@ class Server:
     def looma_model_set(self, name: str, summary: Optional[str] = None,
                         price: Optional[dict] = None, preset: Optional[dict] = None,
                         always: Optional[bool] = None, own_nodes: Optional[bool] = None,
-                        engine_version=None, fields: Optional[dict] = None):
+                        engine_version=None, fields: Optional[dict] = None,
+                        node: Optional[str] = None):
         entry = ops.find_entry(self.looma, name)
         changes = {k: v for k, v in (("summary", summary), ("price", price), ("preset", preset),
-                                     ("engine_version", engine_version), ("fields", fields))
+                                     ("engine_version", engine_version), ("fields", fields),
+                                     ("own_node", node))
                    if v is not None}
         if always is not None:
             changes.update({"min_replicas": 1, "max_replicas": max(1, entry["max_replicas"])}
@@ -435,9 +622,13 @@ class Server:
         if own_nodes is not None:
             changes["contours"] = ["own"] if own_nodes else None
         if not changes:
-            raise ops.OpError("что поменять? summary, price, preset, always, own_nodes или "
-                              "engine_version")
+            raise ops.OpError("что поменять? summary, price, preset, always, own_nodes, node, "
+                              "fields или engine_version")
         return self._model(self.looma.entries.update(entry["id"], changes))
+
+    def looma_model_logs(self, name: str, tail: int = 200):
+        entry = ops.find_entry(self.looma, name)
+        return self.looma.entries.logs(entry["id"], tail=tail)
 
     def looma_model_publish(self, name: str):
         entry = ops.find_entry(self.looma, name)

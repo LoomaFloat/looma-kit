@@ -98,5 +98,58 @@ def pack(root: Path) -> Tuple[bytes, List[str], List[str]]:
     return data, included, skipped
 
 
-__all__ = ["DEFAULT_IGNORE", "MANIFEST", "MAX_BYTES", "PackError", "ignored", "manifest_name",
-           "pack", "patterns"]
+ENGINE_MANIFEST = "looma-engine.yaml"
+EXTENSION_MANIFEST = "looma-extension.yaml"
+#: Предел архива движка — как у площадки (`code_layers.MAX_UPLOAD`): только код.
+ENGINE_MAX_BYTES = 16 * 1024 * 1024
+
+
+def engine_kind(root: Path) -> str:
+    """Что лежит в папке: движок (`looma-engine.yaml`) или расширение
+    (`looma-extension.yaml`)."""
+    engine, extension = (root / ENGINE_MANIFEST).is_file(), (root / EXTENSION_MANIFEST).is_file()
+    if engine and extension:
+        raise PackError(f"в {root} и {ENGINE_MANIFEST}, и {EXTENSION_MANIFEST}: оставьте один")
+    if engine:
+        return "engine"
+    if extension:
+        return "extension"
+    raise PackError(f"в {root} нет {ENGINE_MANIFEST}: это не папка движка. Образец — "
+                    "engines/echo в репозитории looma-kit")
+
+
+def pack_engine(root: Path) -> Tuple[bytes, str, List[str]]:
+    """Папка движка → (архив .tar.gz, engine или extension, что вошло).
+
+    Всё лежит в одной верхней папке, как в архиве коммита GitHub: площадка
+    разбирает оба одинаково. Исключения те же, что у сервиса, и `.loomaignore`
+    папки движка."""
+    root = root.resolve()
+    kind = engine_kind(root)
+    rules = patterns(root)
+    included = []
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for path in sorted(root.rglob("*")):
+            relative = PurePosixPath(path.relative_to(root).as_posix())
+            if ignored(relative, rules) or path.is_symlink() or not path.is_file():
+                continue
+            info = archive.gettarinfo(str(path), arcname=f"engine/{relative.as_posix()}")
+            info.uid = info.gid = 0
+            info.uname = info.gname = ""
+            with path.open("rb") as handle:
+                archive.addfile(info, handle)
+            included.append(relative.as_posix())
+            if buffer.tell() > ENGINE_MAX_BYTES:
+                raise PackError(f"папка движка больше {ENGINE_MAX_BYTES // 2**20} МБ в архиве: "
+                                f"веса и данные движок скачивает сам, лишнее — в {IGNORE_FILE}")
+    data = buffer.getvalue()
+    if len(data) > ENGINE_MAX_BYTES:
+        raise PackError(f"папка движка больше {ENGINE_MAX_BYTES // 2**20} МБ в архиве: "
+                        f"лишнее — в {IGNORE_FILE}")
+    return data, kind, included
+
+
+__all__ = ["DEFAULT_IGNORE", "ENGINE_MANIFEST", "EXTENSION_MANIFEST", "MANIFEST", "MAX_BYTES",
+           "PackError", "engine_kind", "ignored", "manifest_name", "pack", "pack_engine",
+           "patterns"]

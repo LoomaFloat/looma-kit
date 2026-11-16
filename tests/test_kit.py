@@ -57,7 +57,7 @@ def test_flask_with_sqlite_openai_and_uploads_needs_changes(tmp_path):
     assert any(w.startswith("app.py:") for w in where["sqlite"])
 
 
-def test_streamlit_and_local_models_are_blockers(tmp_path):
+def test_streamlit_blocks_and_gpu_code_is_a_choice(tmp_path):
     root = project(tmp_path / "chat", {
         "requirements.txt": "streamlit\ntorch\ntransformers\nollama\n",
         "app.py": "import streamlit as st\nimport torch\nmodel.to(torch.device('cuda'))\n",
@@ -65,8 +65,40 @@ def test_streamlit_and_local_models_are_blockers(tmp_path):
     report = assessed(root)
     assert report["verdict"]["code"] == "blocked"
     ids = report["ids"]
-    assert ids["streamlit"] == ids["cuda"] == ids["local-llm-server"] == "blocker"
-    assert ids["heavy-ml"] == "change"
+    assert ids["streamlit"] == "blocker"
+    # Код на видеокарте — не тупик: модель каталога или свой движок.
+    assert ids["cuda"] == ids["local-llm-server"] == ids["heavy-ml"] == "change"
+    cuda = next(f for f in report["findings"] if f["id"] == "cuda")
+    assert "looma-engine.yaml" in cuda["detail"]
+
+
+def test_shape_says_service_engine_or_both(tmp_path):
+    both = assessed(project(tmp_path / "both", {
+        "requirements.txt": "fastapi\nuvicorn\ntorch\ndiffusers\n",
+        "app.py": "from fastapi import FastAPI\napp = FastAPI()\n",
+        "pipeline.py": "import torch\npipe.to('cuda')\nx = torch.device('cuda')\n",
+    }))
+    assert both["shape"]["code"] == "both" and both["shape"]["web"] and both["shape"]["gpu"]
+    assert "разделить" in both["shape"]["text"]
+    engine = assessed(project(tmp_path / "solver", {
+        "requirements.txt": "torch\n",
+        "solve.py": "import torch\nx = torch.zeros(3).cuda()\n",
+    }))
+    assert engine["shape"]["code"] == "engine"
+    service = assessed(project(tmp_path / "site", {
+        "requirements.txt": "flask\nopenai\n",
+        "app.py": "from flask import Flask\napp = Flask(__name__)\n",
+    }))
+    assert service["shape"]["code"] == "service" and not service["shape"]["gpu"]
+    bot = assessed(project(tmp_path / "bot", {
+        "requirements.txt": "python-telegram-bot\nanthropic\n",
+        "bot.py": "from telegram.ext import Application\n",
+    }))
+    assert bot["shape"]["code"] == "service" and bot["shape"]["bot"]
+    pipe = assessed(project(tmp_path / "pipe", {
+        "render.py": "pipe = Pipeline.from_pretrained('x').to(\"cuda\")\n",
+    }))
+    assert "cuda" in pipe["ids"] and pipe["shape"]["code"] == "engine"
 
 
 def test_node_compose_project_maps_services(tmp_path):

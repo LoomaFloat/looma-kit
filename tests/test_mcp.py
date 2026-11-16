@@ -265,3 +265,43 @@ def test_own_engine_tools(session):
     error, model = s.tool("looma_model_add", name="parrot", engine="anna/echo",
                           recipe={"repeat": 2})
     assert not error and model["name"] == "anna/parrot" and model["form"] == "движок"
+
+
+def test_engine_on_own_nodes_nodes_and_calls(session):
+    """Агент ведёт автора от папки движка до проверки на своём узле."""
+    s, state, tmp = session
+    s.request("initialize", {"protocolVersion": "2025-03-26"})
+    tools = {t["name"] for t in s.request("tools/list")["result"]["tools"]}
+    assert {"looma_engine_try", "looma_node_list", "looma_node_connect", "looma_node_rename",
+            "looma_node_disconnect", "looma_call", "looma_job", "looma_income"} <= tools
+    instructions = s.request("initialize", {"protocolVersion": "2025-03-26"})["result"]
+    assert "skill looma" in instructions["instructions"]
+    folder = tmp / "solver"
+    folder.mkdir()
+    (folder / "looma-engine.yaml").write_text("name: echo\n")
+    (folder / "serve.py").write_text("print('ok')\n")
+    error, text = s.tool("looma_engine_try", directory=str(folder))
+    assert error and "имя автора" in text
+    state.handle = "anna"
+    error, made = s.tool("looma_engine_try", directory=str(folder))
+    assert not error and made["versions"][0]["review"] == "own" and made["files"] == 2
+    assert "looma_model_add" in made["next"]
+    error, connected = s.tool("looma_node_connect", label="Мастерская")
+    assert not error and "--key looma_secretkey1" in connected["command"]
+    assert "не повторяй" in connected["note"]
+    error, listed = s.tool("looma_node_list")
+    assert not error and listed["nodes"][0]["node_id"] == "home-1"
+    error, renamed = s.tool("looma_node_rename", node="home-1", title="Стенд")
+    assert not error and renamed["title"] == "Стенд"
+    error, text = s.tool("looma_node_disconnect", node="home-1", confirm="нет")
+    assert error and "confirm" in text
+    error, answer = s.tool("looma_call", model="anna/solver", path="/tasks", body={"x": 1})
+    assert not error and answer["status"] == 200 and '"path": "/tasks"' in answer["body"]
+    error, started = s.tool("looma_call", model="anna/solver", path="/render",
+                            **{"async": True})
+    assert not error and started["job"]["id"] == "run_1"
+    out = tmp / "result.bin"
+    error, done = s.tool("looma_job", id="run_1", wait=True, out=str(out))
+    assert not error and done["status"] == "succeeded" and out.read_bytes() == b"RESULT"
+    error, income = s.tool("looma_income", period="week")
+    assert not error and income["payouts"] is False

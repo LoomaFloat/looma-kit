@@ -117,6 +117,11 @@ def make_handler(state: State):
 
         def _entries(self, method, path, body):
             """Свои модели автора: `/api/services` как у оркестратора."""
+            if path.endswith("/logs"):
+                return self._send(200, {"model": "anna/parrot", "replicas": [
+                    {"replica": "group-0000abcd", "rank": 0, "state": "failed",
+                     "error": "процесс службы завершился с кодом 1", "node": "home-1",
+                     "text": "ModuleNotFoundError: No module named 'scipy'"}]})
             doc = json.loads(body) if body else {}
             parts = [p for p in path.split("/") if p][2:]
             if not parts:
@@ -176,7 +181,15 @@ def make_handler(state: State):
                 if not state.handle:
                     return self._error(409, "сначала задайте имя автора: слои зовутся "
                                             "`автор/слой`")
-                if len(doc.get("commit") or "") != 40:
+                if doc.get("archive"):
+                    # Версия из папки (`looma engine try`): только для своих узлов.
+                    if not doc.get("own"):
+                        return self._error(400, "архивом подаётся только версия для своих узлов")
+                    with tarfile.open(fileobj=io.BytesIO(base64.b64decode(doc["archive"])),
+                                      mode="r:gz") as tar:
+                        names = [m.name for m in tar.getmembers()]
+                    state.engine_archives = getattr(state, "engine_archives", []) + [names]
+                elif len(doc.get("commit") or "") != 40:
                     return self._error(400, "commit: коммит целиком, 40 знаков")
                 kind = doc.get("kind") or "engine"
                 name = "upper" if kind == "extension" else "echo"
@@ -187,11 +200,17 @@ def make_handler(state: State):
                              "public": False, "approved": None, "versions": []}
                     layers.append(layer)
                 number = len(layer["versions"]) + 1
+                own = bool(doc.get("own"))
+                source = {"upload": "abcdef0123456789", "path": ""} if doc.get("archive") else \
+                    {"repo": doc["repo"], "commit": doc["commit"], "path": doc.get("path", "")}
                 layer["versions"].insert(0, {
-                    "number": number, "status": "pending", "note": "", "files": 2,
-                    "source": {"repo": doc["repo"], "commit": doc["commit"],
-                               "path": doc.get("path", "")}, "fee": doc.get("fee") or {},
+                    "number": number, "status": "approved" if own else "pending", "note": "",
+                    "files": 2, "review": "own" if own else "reviewed",
+                    "contours": ["own"] if own else [],
+                    "source": source, "fee": doc.get("fee") or {},
                     "extends": f"{state.handle}/echo" if kind == "extension" else None})
+                if own:
+                    layer["own"] = number
                 return self._send(200, {**layer, "submitted": number})
             layer = next((x for x in layers if x["ref"] == "/".join(parts[:2])), None)
             if layer is None:
@@ -201,7 +220,90 @@ def make_handler(state: State):
             layer["public"] = bool(doc.get("public"))
             return self._send(200, layer)
 
+        def _nodes(self, method, path, body):
+            """Свои узлы: `/api/nodes` как у оркестратора."""
+            doc = json.loads(body) if body else {}
+            nodes = state.__dict__.setdefault("nodes", [])
+            parts = [p for p in path.split("/") if p][2:]
+            if not parts and method == "GET":
+                return self._send(200, {"object": "nodes", "nodes": nodes, "keys": [],
+                                        "share": {"percent": 100.0}, "payouts": False})
+            if parts == ["keys"] and method == "POST":
+                number = len(nodes) + 1
+                node = {"node_id": f"home-{number}", "title": doc.get("label") or "",
+                        "key_id": f"k{number}", "online": False, "pending": True,
+                        "shared": False, "accepts": {"reviewed": True, "sandbox": False,
+                                                     "own": True}, "work": [], "engines": []}
+                nodes.append(node)
+                key = f"looma_secretkey{number}"
+                return self._send(200, {"key_id": node["key_id"], "label": node["title"],
+                                        "key": key, "node_id": node["node_id"],
+                                        "command": f"docker run -d --gpus all "
+                                                   f"gihpee/looma-agent:1.0.0 --key {key} "
+                                                   f"--node-id {node['node_id']}"})
+            if parts[:1] == ["keys"] and method == "DELETE":
+                state.nodes = [n for n in nodes if n["key_id"] != parts[1]]
+                return self._send(200, {"revoked": parts[1]})
+            node = next((n for n in nodes if n["node_id"] == parts[0]), None)
+            if node is None:
+                return self._error(404, f"узла {parts[0]!r} у вас нет")
+            if method == "PATCH":
+                if "shared" in doc or "accepts" in doc:
+                    return self._error(403, "делиться узлом с сетью и выбирать, чей код он "
+                                            "принимает, решает владелец учётной записи")
+                node["title"] = doc.get("title", node["title"])
+                return self._send(200, node)
+            if method == "DELETE":
+                state.nodes = [n for n in nodes if n is not node]
+                return self._send(200, {"forgotten": node["node_id"]})
+            return self._send(200, node)
+
+        def _run(self, method, path, body):
+            """Модель со своим API (`/v1/run/…`) и её задания (`/v1/jobs/…`)."""
+            jobs = state.__dict__.setdefault("jobs", {})
+            if path.startswith("/v1/jobs/"):
+                parts = path.split("/")[3:]
+                job = jobs.get(parts[0])
+                if job is None:
+                    return self._error(404, "задания нет")
+                if len(parts) > 1 and parts[1] == "content":
+                    return self._send(200, raw=b"RESULT", kind="application/octet-stream")
+                if method == "DELETE":
+                    job["status"] = "cancelled"
+                    return self._send(200, job)
+                job["polls"] = job.get("polls", 0) + 1
+                if job["polls"] >= 2 and job["status"] == "queued":
+                    job.update(status="succeeded", progress=100,
+                               result={"status": 200, "bytes": 6, "url": f"/v1/jobs/{job['id']}"
+                                       "/content", "content_type": "application/octet-stream"})
+                return self._send(200, {k: v for k, v in job.items() if k != "polls"})
+            model = "/".join(path.split("/")[3:5])
+            rest = "/" + "/".join(path.split("/")[5:])
+            state.runs = getattr(state, "runs", []) + [
+                (method, model, rest, self.headers.get("Prefer"), body)]
+            if self.headers.get("Prefer") == "respond-async":
+                job = {"id": f"run_{len(jobs) + 1}", "object": "job", "type": "run",
+                       "status": "queued", "progress": None, "error": None, "result": None,
+                       "detail": {"model": model, "method": method, "path": rest}}
+                jobs[job["id"]] = job
+                return self._send(202, job)
+            return self._send(200, {"echo": body.decode() if body else "", "path": rest},
+                              headers={"X-Looma-Units": "3"})
+
         def _dispatch(self, method, path, query, body):
+            if path == "/api/nodes" or path.startswith("/api/nodes/"):
+                return self._nodes(method, path, body)
+            if path.startswith(("/v1/run/", "/v1/jobs/")):
+                return self._run(method, path, body)
+            if path == "/v1/income":
+                return self._send(200, {"object": "income", "period": query.get("period"),
+                                        "overall": {"accrued": 12000, "fee": 0, "cost": 300,
+                                                    "net": 11700},
+                                        "services": [], "compute": {
+                                            "models": [{"model": "anna/solver", "calls": 4,
+                                                        "accrued": 12000, "cost": 300,
+                                                        "net": 11700}],
+                                            "engines": [], "nodes": []}, "payouts": False})
             if path == "/api/me" and method == "PATCH":
                 if state.handle:
                     return self._error(409, "имя автора уже задано")

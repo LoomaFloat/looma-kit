@@ -332,26 +332,34 @@ class Rule:
 
 RULES: List[Rule] = [
     # --- модели на своей видеокарте
-    Rule("local-llm-server", "blocker", "Своя языковая модель на GPU (Ollama, vLLM, llama.cpp)",
-         "В песочнице площадки нет GPU. Модели считает сеть Looma Float: вызовы нужно перевести "
-         "на модели каталога по API (OpenAI-совместимый), а свой сервер модели убрать.",
+    Rule("local-llm-server", "change", "Своя языковая модель на GPU (Ollama, vLLM, llama.cpp)",
+         "В процессе сервиса нет видеокарты: модели считает сеть Looma Float. Два пути. Есть "
+         "подходящая модель в каталоге (`looma models`): перевести вызовы на неё по "
+         "OpenAI-совместимому API и убрать свой сервер модели. Нет или нужны свои веса: "
+         "своя модель на движке площадки (`looma model add --repo`) или свой движок "
+         "(`looma-engine.yaml`), который сервис зовёт как модель каталога.",
          "references/models.md",
          py=("vllm", "llama-cpp-python", "llama_cpp", "ctransformers", "exllamav2", "ollama",
              "auto-gptq", "awq", "text-generation-inference", "tensorrt-llm", "mlx-lm"),
          node=("ollama", "node-llama-cpp", "@llama-node/core"),
          code=(r"localhost:11434|127\.0\.0\.1:11434|OLLAMA_HOST|OLLAMA_BASE_URL",),
          images=("ollama", "vllm", "text-generation-inference", "llama.cpp", "localai")),
-    Rule("cuda", "blocker", "Код рассчитан на CUDA",
-         "В песочнице нет GPU: `.cuda()` и `device=\"cuda\"` не заработают. Если это инференс "
-         "модели — заменить на модель каталога; если обучение — площадка для него не подходит.",
+    Rule("cuda", "change", "Код считает на видеокарте (CUDA)",
+         "В процессе сервиса видеокарты нет, а у движка автора есть. Если код вызывает "
+         "модель, которая есть в каталоге (`looma models`), вызов переводится на неё. Если это "
+         "своя модель, свой пайплайн или любое другое вычисление на карте (обучение, рендер, "
+         "расчёт), эта часть становится движком (`looma-engine.yaml`): на своих узлах без "
+         "ревью, в сети после ревью. Веб-часть остаётся сервисом и зовёт движок по API.",
          "references/models.md",
          code=(r"\.cuda\(\)|device\s*=\s*['\"]cuda|torch\.device\(\s*['\"]cuda|"
-               r"CUDA_VISIBLE_DEVICES|FROM\s+nvidia/|--gpus\b|driver:\s*nvidia",),
+               r"\.to\(\s*['\"]cuda|CUDA_VISIBLE_DEVICES|FROM\s+nvidia/|--gpus\b|"
+               r"driver:\s*nvidia",),
          code_in=(".py", "dockerfile", "docker-compose", "compose.")),
     Rule("heavy-ml", "change", "Тяжёлые ML-пакеты (torch, tensorflow, transformers, diffusers)",
-         "Сборка идёт с 1 ГБ памяти и до 30 минут, образ вырастет на гигабайты, считать на CPU "
-         "медленно. Почти всегда правильнее вызывать модели каталога (текст, изображения, видео, "
-         "векторы, ре-ранк) и убрать эти пакеты из зависимостей.",
+         "В сервисе им не место: сборка идёт с 1 ГБ памяти и до 30 минут, видеокарты нет. Если "
+         "модель есть в каталоге (текст, изображения, видео, векторы, ре-ранк), вызывать её и "
+         "убрать пакеты. Если нет, код с этими пакетами переезжает в свой движок, а сервис "
+         "зовёт его по API.",
          "references/models.md",
          py=("torch", "tensorflow", "tensorflow-gpu", "jax", "jaxlib", "transformers", "diffusers",
              "accelerate", "bitsandbytes", "xformers", "onnxruntime-gpu", "keras", "peft",
@@ -359,9 +367,10 @@ RULES: List[Rule] = [
              "timm", "ultralytics", "paddlepaddle"),
          node=("@tensorflow/tfjs-node", "@tensorflow/tfjs-node-gpu", "@xenova/transformers",
                "@huggingface/transformers", "onnxruntime-node")),
-    Rule("speech", "blocker", "Распознавание или синтез речи своей моделью",
-         "Модели считаются только в сети Looma Float. Если в `looma models` нет модели нужного типа — "
-         "это блокер; внешний API по HTTPS остаётся вариантом (ключ — секретом).",
+    Rule("speech", "change", "Распознавание или синтез речи своей моделью",
+         "Модели считаются в сети Looma Float. Есть модель нужного типа в `looma models`: "
+         "вызывать её. Нет: своя модель становится движком со своим API (`kinds: [api]`), "
+         "либо остаётся внешний API по HTTPS с ключом в секрете.",
          "references/models.md",
          py=("openai-whisper", "whisper", "faster-whisper", "faster_whisper", "whisperx", "tts",
              "coqui-tts", "bark", "nemo-toolkit", "vosk", "silero", "pyannote-audio",
@@ -790,9 +799,20 @@ def check_stack(project: Project, info: dict) -> List[Finding]:
     return out
 
 
+_ENV_IN_CODE = re.compile(r"(?:os\.environ(?:\.get)?\(?\[?|os\.getenv\(|getenv\(|"
+                          r"process\.env\.|process\.env\[)\s*['\"]?([A-Z][A-Z0-9_]{2,})")
+#: Переменные, похожие на секрет: ключи, токены, пароли.
+_SECRET_LIKE = re.compile(r"KEY|TOKEN|SECRET|PASSWORD|PASS|DSN|CREDENTIAL")
+
+
 def secrets_of(project: Project) -> List[str]:
-    """Имена переменных из примеров .env — кандидаты в `looma secrets set`."""
+    """Имена переменных из примеров .env и похожие на секреты из кода
+    (`os.environ["…_TOKEN"]`) — кандидаты в `looma secrets set`."""
     names: List[str] = []
+    for path, text in project.texts.items():
+        if not path.endswith((".py", ".js", ".mjs", ".cjs", ".ts")) or auxiliary(path):
+            continue
+        names += [n for n in _ENV_IN_CODE.findall(text) if _SECRET_LIKE.search(n)]
     for path, text in project.texts.items():
         base = path.rsplit("/", 1)[-1].lower()
         if not base.startswith(".env") and base not in ("env.example", "example.env"):
@@ -838,6 +858,44 @@ def entrypoint(project: Project, info: dict) -> str:
     return ""
 
 
+#: Находки, по которым видно, что проект считает на видеокарте сам.
+GPU_FINDINGS = {"local-llm-server", "cuda", "heavy-ml", "speech", "weights"}
+#: Боты: принимают сообщения сами, это тоже сервис.
+BOTS_PY = ("python-telegram-bot", "aiogram", "pytelegrambotapi", "telebot", "discord.py",
+           "discord", "vk-api", "vk_api", "slack-bolt", "slack_bolt")
+BOTS_NODE = ("telegraf", "grammy", "node-telegram-bot-api", "discord.js", "@slack/bolt")
+
+
+def shape_of(project: Project, info: dict, findings: List[Finding]) -> dict:
+    """Что перед нами: веб-сервис, вычисление на видеокарте, то и другое или
+    ни то ни другое (скрипт, библиотека). По этому выбирается путь на площадке:
+    сервис (`looma.yaml`), движок (`looma-engine.yaml`) или оба."""
+    ids = {f.id for f in findings}
+    scripts = project.package.get("scripts") or {} if isinstance(project.package, dict) else {}
+    bot = any(norm(name) in project.py_deps or norm(name) in project.py_imports
+              for name in BOTS_PY) or any(name in project.node_deps for name in BOTS_NODE)
+    web = bool(info["frameworks"]) or "listen" in ids or bool(scripts.get("start")) or bot
+    gpu = bool(ids & GPU_FINDINGS)
+    if web and gpu:
+        code, text = "both", ("Веб-сервис и вычисления на видеокарте в одном проекте: веб "
+                              "становится сервисом (looma.yaml), вычисление — моделью каталога "
+                              "или своим движком (looma-engine.yaml). Предложить разделить")
+    elif gpu:
+        code, text = "engine", ("Вычисление на видеокарте без веба: модель каталога, своя "
+                                "модель на движке площадки или свой движок; сервис нужен, "
+                                "только если у результата будет свой интерфейс для клиентов")
+    elif web:
+        code, text = "service", ("Бот: сервис (looma.yaml), обновления вебхуком на адрес "
+                                 "сервиса или опросом в процессе worker; модели по API"
+                                 if bot and not info["frameworks"] else
+                                 "Веб-сервис: looma.yaml, модели по API")
+    else:
+        code, text = "unknown", ("Ни веба, ни вычислений на видеокарте не найдено: скрипт, "
+                                 "библиотека или бот. Спросить автора, что он хочет получить")
+    return {"code": code, "text": text, "web": web, "gpu": gpu, "bot": bot,
+            "gpu_signals": sorted(ids & GPU_FINDINGS)}
+
+
 def manifest_draft(project: Project, info: dict, findings: List[Finding]) -> str:
     name = re.sub(r"[^a-z0-9-]+", "-", project.root.resolve().name.lower()).strip("-")[:40]
     name = name if re.match(r"^[a-z]", name or "") else f"app-{name}".strip("-")
@@ -851,6 +909,9 @@ def manifest_draft(project: Project, info: dict, findings: List[Finding]) -> str
         dockerfile = info["dockerfiles"][0] if info["dockerfiles"] else "Dockerfile"
         lines.append(f"runtime: {{ kind: docker, dockerfile: {dockerfile} }}")
     cmd = entrypoint(project, info) or "ЗАПОЛНИТЬ: команда запуска веба"
+    if shape_of(project, info, findings)["code"] == "engine":
+        lines.insert(0, "# Веба в проекте нет: looma.yaml нужен, только если у результата "
+                        "будет сервис. Вычисление — в движок (looma-engine.yaml).")
     lines += ["processes:", f'  web: {{ cmd: "{cmd}", port: 8080, min: 0 }}']
     if "background" in ids:
         lines.append('  # worker: { cmd: "ЗАПОЛНИТЬ: команда фонового процесса" }')
@@ -863,7 +924,8 @@ def manifest_draft(project: Project, info: dict, findings: List[Finding]) -> str
         lines += ["data:"] + data
     if ids & {"local-llm-server", "cuda", "heavy-ml", "external-llm-api", "speech"}:
         lines += ["gpu:", "  # ЗАПОЛНИТЬ по `looma models`: шаг: { model: <имя из каталога> }",
-                  "  # chat: { model: <текстовая модель> }"]
+                  "  # chat: { model: <текстовая модель> }",
+                  "  # свой движок: шаг: { model: <автор>/<модель на движке> }"]
     secrets = secrets_of(project)
     if secrets:
         lines.append(f"secrets: [{', '.join(secrets[:12])}]")
@@ -904,6 +966,8 @@ def assess(root: Path) -> dict:
                     "compose_services": {k: v.get("image", "build" if v.get("build") else "")
                                          for k, v in project.compose.items()}},
         "verdict": {"code": verdict[0], "text": verdict[1]},
+        # Что перед нами и какой путь на площадке: сервис, движок или оба.
+        "shape": shape_of(project, info, findings),
         "findings": [asdict(f) for f in findings],
         "secrets": secrets_of(project),
         "manifest_draft": manifest_draft(project, info, findings),
@@ -914,6 +978,7 @@ def markdown(report: dict) -> str:
     p = report["project"]
     out = [f"# Оценка проекта для Looma Float: {Path(p['path']).name}", "",
            f"**Итог: {report['verdict']['text']}.**", "",
+           f"**Что это: {report['shape']['text']}.**", "",
            "## Проект", "",
            f"- Языки: {', '.join(p['languages']) or 'не определены'}",
            f"- Фреймворки: {', '.join(p['frameworks']) or 'не найдены'}",

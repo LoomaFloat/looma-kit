@@ -572,3 +572,98 @@ def test_цена_и_доля_за_вызов():
     assert ops.entry_price({"price": {"price_call": 150}}) == "за вызов 1,50 ₽"
     with pytest.raises(ops.EntryError, match="call"):
         ops.fee_of(["image=1"])
+
+
+def test_own_engine_from_a_folder_on_own_nodes(api, capsys, tmp_path):
+    """Свой движок из папки на свои узлы, без ревью и без GitHub."""
+    base, state = api
+    login(base, capsys)
+    state.handle = "anna"
+    code, _out, err = run(capsys, "engine", "try", str(tmp_path))
+    assert code == 1 and "looma-engine.yaml" in err, "не папка движка"
+    folder = tmp_path / "solver"
+    (folder / "solver" / "__pycache__").mkdir(parents=True)
+    (folder / "looma-engine.yaml").write_text("name: echo\n")
+    (folder / "solver" / "serve.py").write_text("print('ok')\n")
+    (folder / "solver" / "__pycache__" / "serve.cpython-312.pyc").write_bytes(b"\x00")
+    (folder / ".env").write_text("TOKEN=секрет\n")
+    code, out, err = run(capsys, "engine", "try", str(folder))
+    assert code == 0, err
+    assert "версия 1: без ревью, работает только на ваших узлах, из папки" in out
+    assert "looma model add <имя> --engine anna/echo" in out
+    names = state.engine_archives[-1]
+    assert sorted(names) == ["engine/looma-engine.yaml", "engine/solver/serve.py"], \
+        "кэш и секреты в архив не едут"
+    sent = json.loads([c for c in state.calls if c[:2] == ("POST", "/api/layers")][-1][3])
+    assert sent["own"] is True and sent["kind"] == "engine" and "repo" not in sent
+    # Из репозитория без ревью — флагом.
+    code, out, err = run(capsys, "engine", "submit", "--repo", "https://github.com/anna/echo",
+                         "--commit", "c" * 40, "--own")
+    assert code == 0 and "без ревью: работает только на ваших узлах" in out, err
+
+
+def test_nodes_from_the_terminal(api, capsys):
+    base, state = api
+    login(base, capsys)
+    code, out, _err = run(capsys, "node")
+    assert code == 0 and "своих узлов нет" in out
+    code, out, err = run(capsys, "node", "connect", "--label", "Мастерская")
+    assert code == 0, err
+    assert "docker run -d --gpus all gihpee/looma-agent:1.0.0 --key looma_secretkey1" in out
+    assert "показывается один раз" in out
+    code, out, _err = run(capsys, "node", "list")
+    assert "home-1 «Мастерская»: ждёт подключения" in out and "работает только на вас" in out
+    code, out, err = run(capsys, "node", "rename", "home-1", "--label", "Стенд")
+    assert code == 0 and "home-1 «Стенд»" in out, err
+    code, _out, err = run(capsys, "node", "disconnect", "home-1")
+    assert code == 1 and "--yes" in err
+    code, out, _err = run(capsys, "node", "disconnect", "Стенд", "--yes")
+    assert code == 0 and "отключён" in out and state.nodes == []
+    code, _out, err = run(capsys, "node", "show", "home-9")
+    assert code == 1 and "looma node list" in err
+
+
+def test_call_own_api_model_and_its_job(api, capsys, tmp_path):
+    base, state = api
+    login(base, capsys)
+    code, out, err = run(capsys, "call", "anna/solver", "--path", "/tasks?fast=1",
+                         "--data", '{"x": 1}')
+    assert code == 0, err
+    assert "ответ 200, единиц 3" in out and '"path": "/tasks"' in out
+    method, model, rest, prefer, body = state.runs[-1]
+    assert (method, model, rest, prefer, json.loads(body)) == \
+        ("POST", "anna/solver", "/tasks", None, {"x": 1})
+    code, out, err = run(capsys, "call", "anna/solver", "--path", "/render", "--async")
+    assert code == 0, err
+    assert "run_1: queued" in out and "looma job run_1 --wait" in out
+    assert state.runs[-1][3] == "respond-async"
+    target = tmp_path / "result.bin"
+    code, out, err = run(capsys, "job", "run_1", "--out", str(target))
+    assert code == 0, err
+    assert "run_1: succeeded" in out and target.read_bytes() == b"RESULT"
+    code, out, _err = run(capsys, "income", "--period", "week")
+    assert "модель anna/solver: вызовов 4" in out and "выплат пока нет" in out
+
+
+def test_model_on_a_named_own_node(api, capsys):
+    base, state = api
+    login(base, capsys)
+    state.handle = "anna"
+    code, _out, err = run(capsys, "model", "add", "parrot", "--repo", "Qwen/Qwen3-0.6B",
+                          "--node", "home-1")
+    assert code == 1 and "движке автора" in err
+    code, _out, err = run(capsys, "model", "add", "parrot", "--engine", "anna/echo",
+                          "--node", "home-1")
+    assert code == 0, err
+    sent = json.loads([c for c in state.calls if c[:2] == ("POST", "/api/services")][-1][3])
+    assert sent["own_node"] == "home-1" and sent["engine"] == "anna/echo"
+
+
+def test_model_logs(api, capsys):
+    base, state = api
+    login(base, capsys)
+    state.handle = "anna"
+    run(capsys, "model", "add", "parrot", "--engine", "anna/echo")
+    code, out, err = run(capsys, "model", "logs", "parrot", "--tail", "50")
+    assert code == 0, err
+    assert "реплика 0000abcd, ранг 0 на home-1: failed" in out and "No module named" in out

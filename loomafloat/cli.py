@@ -11,8 +11,12 @@
     looma secrets set KEY=VALUE    секреты процессов
     looma publish                  карточку и цены — в маркетплейс (через модерацию)
     looma model add …              своя модель в каталоге: веса, адаптер или настройка
+    looma engine try [папка]       свой движок на своих узлах, без ревью
     looma engine submit …          свой движок: версия из репозитория на ревью площадки
+    looma node connect             подключить свою машину с видеокартой
+    looma call <модель> …          пробный вызов модели: чат, изображение, свой API
     looma stats                    запросы, клиенты, события, себестоимость
+    looma income                   доход: сервисы, модели, движки, узлы
 
 Сервис (app) берётся из `--app`, иначе по имени из `looma.yaml` текущей папки.
 """
@@ -218,7 +222,8 @@ def cmd_models(args) -> None:
         state = "спит" if m.get("status") == "cold" else "отвечает"
         context = f" · контекст {m['context']}" if m.get("context") else ""
         vector = f" · вектор {m['dimensions']}" if m.get("dimensions") else ""
-        say(f"{m['id']:<{width}}  {m.get('kind') or 'text':<9} {state}{context}{vector}")
+        say(f"{m['id']:<{width}}  {m.get('kind') or 'text':<9} {state}{context}{vector}"
+            + ops.model_price_text(m))
     say("в манифест — по имени: gpu: { шаг: { model: <имя> } }")
 
 
@@ -248,7 +253,9 @@ def _model_lines(entry: dict) -> list:
         replicas = row["replicas"]
         lines.append(f"  реплики: работает {replicas['running']}, держать всегда "
                      f"{replicas['min']}")
-        if row.get("own_nodes"):
+        if (entry.get("recipe") or {}).get("own_node"):
+            lines.append(f"  узел: только {entry['recipe']['own_node']}")
+        elif row.get("own_nodes"):
             lines.append("  узлы: только свои")
     lines.append(f"  цена: {ops.entry_price(entry)}")
     if row.get("note"):
@@ -265,12 +272,33 @@ def cmd_engine(args) -> None:
         if action == "list":
             doc = looma.engines.mine()
             if not doc["layers"]:
-                say("своих движков нет: `looma engine submit --repo https://github.com/вы/"
-                    "репозиторий --commit <коммит>`")
+                say("своих движков нет. На своих узлах без ревью: `looma engine try <папка>`; "
+                    "для сети: `looma engine submit --repo https://github.com/вы/репозиторий "
+                    "--commit <коммит>`")
                 return
             for layer in doc["layers"]:
                 for line in ops.layer_lines(layer):
                     say(line)
+        elif action == "try":
+            root = Path(name or ".")
+            if not looma.engines.mine().get("handle"):
+                raise Stop("сначала задайте имя автора, с него начинаются имена движков: "
+                           "`looma model name <имя>`")
+            try:
+                data, kind, files = ops.pack_engine(root)
+            except PackError as exc:
+                raise Stop(str(exc)) from None
+            say(f"папка {root.resolve().name}: {len(files)} файлов, {len(data) // 1024} КБ в архиве")
+            made = looma.engines.try_archive(data, kind=kind)
+            for line in ops.layer_lines(made):
+                say(line)
+            version = made.get("submitted")
+            say(f"версия {version} без ревью: работает только на ваших узлах. "
+                + ("Модель на ней: `looma model add <имя> --engine "
+                   f"{made['ref']}` (встанет на свой узел; узлы: `looma node list`). "
+                   "Уже есть модель: `looma model set <имя> --engine-version "
+                   f"{version}`" if kind == "engine" else
+                   "Расширение подключают в модель полем extensions"))
         elif action == "submit":
             if not args.repo or not args.commit:
                 raise Stop("откуда собрать? looma engine submit --repo https://github.com/вы/"
@@ -281,9 +309,13 @@ def cmd_engine(args) -> None:
             made = looma.engines.submit(repo=args.repo, commit=args.commit,
                                         path=args.path or "",
                                         kind="extension" if args.extension else "engine",
-                                        fee=ops.fee_of(args.fee))
+                                        fee=ops.fee_of(args.fee), own=args.own)
             for line in ops.layer_lines(made):
                 say(line)
+            if args.own:
+                say(f"версия {made.get('submitted')} без ревью: работает только на ваших "
+                    f"узлах. Модель на ней: `looma model add <имя> --engine {made['ref']}`")
+                return
             image = any(v.get("form") == "image" and v["number"] == made.get("submitted")
                         for v in made.get("versions") or [])
             say((f"версия {made.get('submitted')}: площадка собирает образ, это несколько минут; "
@@ -360,16 +392,30 @@ def cmd_model(args) -> None:
             payload = ops.entry_payload(
                 name=name or "", repo=args.repo or "", engine=args.engine or "",
                 recipe=ops.recipe_of(args.set), base=args.base or "", adapter=args.adapter or "",
-                preset=preset, summary=args.summary or "", always=args.always, own=args.own)
+                preset=preset, summary=args.summary or "", always=args.always, own=args.own,
+                node=args.node or "")
             made = ops.add_entry(looma, payload)
             for line in _model_lines(made):
                 say(line)
             say(f"вызвать: gpu: {{ шаг: {{ model: {made['label']} }} }}; сейчас модель видите "
                 f"только вы, для всех: `looma model publish {made['label']}`")
-        elif action in ("show", "set", "publish", "unpublish", "delete"):
+        elif action in ("show", "set", "logs", "publish", "unpublish", "delete"):
             if not name:
                 raise Stop(f"какая модель? looma model {action} <имя>")
             entry = ops.find_entry(looma, name)
+            if action == "logs":
+                doc = looma.entries.logs(entry["id"], tail=args.tail)
+                if not doc["replicas"]:
+                    say("реплик пока не было: модель поднимется на первый вызов или с --always")
+                for row in doc["replicas"]:
+                    where = f" на {row['node']}" if row.get("node") else ""
+                    say(f"реплика {row['replica'][-8:]}, ранг {row['rank']}{where}: {row['state']}"
+                        + (f", {row['error']}" if row.get("error") else ""))
+                    if row.get("unavailable"):
+                        say(f"  {row['unavailable']}")
+                    for line in str(row.get("text") or "").splitlines():
+                        say(f"  {line}")
+                return
             if action == "set":
                 changes = {}
                 if args.summary is not None:
@@ -393,6 +439,8 @@ def cmd_model(args) -> None:
                     if version != "latest" and not version.isdigit():
                         raise Stop("--engine-version: номер версии или latest")
                     changes["engine_version"] = version if version == "latest" else int(version)
+                if args.node is not None:
+                    changes["own_node"] = args.node      # пустая строка убирает выбор
                 if args.set and action == "set":
                     # Поля движка: меняются вместе с версией или сами по себе;
                     # `имя=` убирает поле.
@@ -400,7 +448,7 @@ def cmd_model(args) -> None:
                                          for key, value in ops.recipe_of(args.set).items()}
                 if not changes:
                     raise Stop("что поменять? --summary, --price, --free, --preset, --always, "
-                               "--sleep, --own, --network или --engine-version")
+                               "--sleep, --own, --network, --node или --engine-version")
                 entry = looma.entries.update(entry["id"], changes)
             elif action == "publish":
                 entry = looma.entries.publish(entry["id"])
@@ -427,6 +475,137 @@ def cmd_model(args) -> None:
                     say("    " + line)
     except ops.OpError as exc:
         raise Stop(str(exc)) from None
+
+
+def cmd_node(args) -> None:
+    looma = _looma(args)
+    action, name = args.action, args.name
+    try:
+        if action == "list":
+            doc = looma.nodes.mine()
+            if not doc["nodes"]:
+                say("своих узлов нет: `looma node connect` даст команду для машины с "
+                    "видеокартой")
+                return
+            for node in doc["nodes"]:
+                for line in ops.node_lines(node):
+                    say(line)
+        elif action == "connect":
+            made = looma.nodes.connect(args.label or name or "")
+            say(f"узел {made.get('node_id')}: запустите команду на машине с видеокартой "
+                "(нужны драйвер NVIDIA, Docker и NVIDIA Container Toolkit). В команде ключ: "
+                "он показывается один раз, не публикуйте его")
+            say("")
+            say(made["command"])
+            say("")
+            say("через минуту узел будет на связи: `looma node list`")
+        elif action in ("show", "rename", "disconnect", "forget"):
+            if not name:
+                raise Stop(f"какой узел? looma node {action} <узел>")
+            node = looma.nodes.find(name)
+            if node is None:
+                raise Stop(f"узла {name!r} у вас нет: `looma node list` покажет свои")
+            if action == "rename":
+                if not args.label:
+                    raise Stop("как назвать? looma node rename <узел> --label «название»")
+                node = looma.nodes.rename(node["node_id"], args.label)
+            elif action == "disconnect":
+                if not args.yes:
+                    raise Stop(f"узел {node['node_id']} отключится, работа на нём снимется, ключ "
+                               "перестанет действовать. Подтвердите флагом --yes")
+                looma.nodes.disconnect(node["key_id"])
+                say(f"узел {node['node_id']} отключён, ключ отозван")
+                return
+            elif action == "forget":
+                looma.nodes.forget(node["node_id"])
+                say(f"узел {node['node_id']} убран из списка")
+                return
+            for line in ops.node_lines(node):
+                say(line)
+    except ops.OpError as exc:
+        raise Stop(str(exc)) from None
+
+
+def _body_of(args):
+    if args.data_file:
+        return Path(args.data_file).read_bytes()
+    if args.data is None:
+        return None
+    try:
+        return json.loads(args.data)
+    except ValueError:
+        return args.data
+
+
+def _write_or_say(content: bytes, out: Optional[str], content_type: str = "") -> None:
+    if out:
+        Path(out).write_bytes(content)
+        say(f"сохранено: {out} ({len(content)} байт)")
+        return
+    text = content.decode("utf-8", errors="replace")
+    if "\ufffd" in text or (content_type and not content_type.startswith(
+            ("text/", "application/json"))):
+        say(f"{len(content)} байт {content_type or ''}: сохраните в файл флагом --out")
+        return
+    say(text)
+
+
+def cmd_call(args) -> None:
+    """Пробный вызов модели своим ключом: чат, изображение или свой API."""
+    looma = _looma(args)
+    model = args.model
+    if args.image is not None:
+        pngs = looma.image(model, args.image, images=args.source or None)
+        out = args.out or "image.png"
+        Path(out).write_bytes(pngs[0])
+        say(f"изображение: {out}")
+        return
+    if args.path is not None or args.data is not None or args.data_file or args.wait_not:
+        headers = dict(item.split(":", 1) for item in args.header or [] if ":" in item)
+        headers = {k.strip(): v.strip() for k, v in headers.items()}
+        answer = looma.run(model, args.path or "/", method=args.method, body=_body_of(args),
+                           headers=headers, wait=not args.wait_not)
+        if hasattr(answer, "doc"):
+            for line in ops.job_lines(answer.doc):
+                say(line)
+            say(f"дождаться и забрать: `looma job {answer.id} --wait --out результат`")
+            return
+        say(f"ответ {answer.status}" + (f", единиц {answer.headers['x-looma-units']}"
+                                        if answer.headers.get("x-looma-units") else ""))
+        _write_or_say(answer.content, args.out, answer.headers.get("content-type", ""))
+        return
+    text = args.text or "Привет! Ответь одним словом."
+    for piece in looma.chat_stream(model, text):
+        sys.stdout.write(piece)
+        sys.stdout.flush()
+    say("")
+
+
+def cmd_job(args) -> None:
+    looma = _looma(args)
+    job = looma.job(args.id)
+    if args.cancel:
+        job.cancel()
+        say(f"{job.id}: снято")
+        return
+    if args.wait or args.out:
+        last = None
+        while job.status not in job.DONE:
+            if job.progress != last and job.progress is not None:
+                say(f"{job.id}: {job.status}, {job.progress}%")
+                last = job.progress
+            time.sleep(5)
+            job.refresh()
+    for line in ops.job_lines(job.doc):
+        say(line)
+    if args.out and (job.doc.get("result") or {}).get("url"):
+        _write_or_say(job.content(), args.out)
+
+
+def cmd_income(args) -> None:
+    looma = _looma(args)
+    for line in ops.income_lines(looma.income(args.period)):
+        say(line)
 
 
 def cmd_skill(args) -> None:
@@ -810,12 +989,12 @@ def parser() -> argparse.ArgumentParser:
     p = command("model", cmd_model, "свои модели в каталоге: веса, адаптер, настройка поверх "
                                     "модели")
     p.add_argument("action", nargs="?", default="list",
-                   choices=("list", "add", "check", "show", "set", "publish", "unpublish",
-                            "delete", "name", "adapters"),
+                   choices=("list", "add", "check", "show", "set", "logs", "publish",
+                            "unpublish", "delete", "name", "adapters"),
                    help="list — свои модели (по умолчанию); add — добавить; check — проверить "
                         "веса без запуска; show — подробно; set — описание, цена, настройка, "
-                        "реплики; publish и unpublish — публикация; delete — удалить; name — "
-                        "имя автора; adapters — адаптеры LoRA проекта")
+                        "реплики; logs — лог реплик; publish и unpublish — публикация; "
+                        "delete — удалить; name — имя автора; adapters — адаптеры LoRA проекта")
     p.add_argument("name", nargs="?", help="имя модели (у name — имя автора)")
     p.add_argument("--repo", help="add, check: репозиторий весов на HuggingFace")
     p.add_argument("--engine", help="add, check: движок (по умолчанию torch)")
@@ -840,17 +1019,25 @@ def parser() -> argparse.ArgumentParser:
                    help="set: разрешить модели засыпать без запросов")
     p.add_argument("--own", action="store_true",
                    help="add, set: держать модель только на своих узлах (раздел «Узлы»)")
+    p.add_argument("--node", metavar="узел",
+                   help="add, set: держать модель на движке автора на этом своём узле "
+                        "(`looma node list`); у set пустое значение убирает выбор")
     p.add_argument("--network", action="store_true",
                    help="set: разрешить модели вставать и на узлы сети")
     p.add_argument("--yes", action="store_true", help="delete: подтвердить удаление")
+    p.add_argument("--tail", type=int, default=200, help="logs: сколько строк")
 
-    p = command("engine", cmd_engine, "свои движки и расширения: подать на ревью, открыть "
-                                      "авторам")
+    p = command("engine", cmd_engine, "свои движки и расширения: на свои узлы без ревью, на "
+                                      "ревью для сети, открыть авторам")
     p.add_argument("action", nargs="?", default="list",
-                   choices=("list", "submit", "show", "open", "close"),
-                   help="list — свои движки (по умолчанию); submit — подать версию на ревью; "
-                        "show — подробно; open — открыть другим авторам; close — закрыть")
-    p.add_argument("name", nargs="?", help="имя движка или расширения")
+                   choices=("list", "try", "submit", "show", "open", "close"),
+                   help="list — свои движки (по умолчанию); try — версия из папки на свои узлы, "
+                        "без ревью; submit — подать версию на ревью; show — подробно; open — "
+                        "открыть другим авторам; close — закрыть")
+    p.add_argument("name", nargs="?",
+                   help="имя движка или расширения; у try — папка с looma-engine.yaml")
+    p.add_argument("--own", action="store_true",
+                   help="submit: версия из репозитория без ревью, только на свои узлы")
     p.add_argument("--repo", help="submit: открытый репозиторий на GitHub")
     p.add_argument("--commit", help="submit: коммит целиком, 40 знаков")
     p.add_argument("--path", help="submit: папка с looma-engine.yaml, если он не в корне")
@@ -859,6 +1046,42 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--fee", action="append", metavar="единица=рубли",
                    help="submit: доля автора движка с чужих вызовов: call за вызов, in и out "
                         "за 1M токенов; можно несколько раз")
+
+    p = command("node", cmd_node, "свои узлы: машины с видеокартой, подключённые к площадке")
+    p.add_argument("action", nargs="?", default="list",
+                   choices=("list", "connect", "show", "rename", "disconnect", "forget"),
+                   help="list — свои узлы (по умолчанию); connect — ключ и команда для новой "
+                        "машины; show — подробно; rename — подпись; disconnect — отключить и "
+                        "отозвать ключ; forget — убрать из списка узел не на связи")
+    p.add_argument("name", nargs="?", help="узел (имя или подпись)")
+    p.add_argument("--label", help="connect, rename: подпись узла")
+    p.add_argument("--yes", action="store_true", help="disconnect: подтвердить")
+
+    p = command("call", cmd_call, "пробный вызов модели своим ключом: чат, изображение, свой "
+                                  "API, долгое вычисление")
+    p.add_argument("model", help="модель: имя из `looma models` или автор/модель")
+    p.add_argument("text", nargs="?", help="чат: сообщение")
+    p.add_argument("--image", metavar="описание", help="изображение по описанию")
+    p.add_argument("--from", dest="source", action="append", metavar="файл",
+                   help="с --image: исходное изображение для правки, можно несколько раз")
+    p.add_argument("--path", help="свой API: путь у службы, например /tasks?fast=1")
+    p.add_argument("--method", default="POST", help="свой API: метод (по умолчанию POST)")
+    p.add_argument("--data", help="свой API: тело (JSON уходит как JSON, иначе текстом)")
+    p.add_argument("--data-file", help="свой API: тело из файла")
+    p.add_argument("--header", action="append", metavar="Имя: значение",
+                   help="свой API: заголовок, можно несколько раз")
+    p.add_argument("--async", dest="wait_not", action="store_true",
+                   help="свой API: долгое вычисление заданием (Prefer: respond-async)")
+    p.add_argument("--out", help="сохранить ответ в файл")
+
+    p = command("job", cmd_job, "задание: состояние, ожидание, результат, отмена")
+    p.add_argument("id", help="номер задания (run_…)")
+    p.add_argument("--wait", action="store_true", help="дождаться конца")
+    p.add_argument("--out", help="сохранить ответ службы в файл (ждёт конца)")
+    p.add_argument("--cancel", action="store_true", help="снять задание")
+
+    p = command("income", cmd_income, "доход: сервисы, свои модели, движки, узлы")
+    p.add_argument("--period", choices=("week", "month", "all"), default="month")
 
     p = command("check", cmd_check, "запрос к вебу сервиса: код, время, начало ответа",
                 app=True)

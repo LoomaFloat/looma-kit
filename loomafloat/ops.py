@@ -17,7 +17,8 @@ from typing import Callable, Optional
 
 from loomafloat.client import Looma
 from loomafloat.http import LoomaError
-from loomafloat.pack import MANIFEST, PackError, ignored, manifest_name, pack, patterns
+from loomafloat.pack import (MANIFEST, PackError, ignored, manifest_name, pack, pack_engine,  # noqa: F401
+                             patterns)
 
 TEMPLATES = Path(__file__).with_name("templates")
 #: Шаблону нужен SDK — копия ложится в проект: сервис собирается на
@@ -109,8 +110,9 @@ def missing_sdk(root: Path) -> bool:
 
 
 # ---------------------------------------------------------------- skills
-#: Skills для агентов: перенос проекта на площадку и работа с сервисом.
-SKILLS = ("looma-port", "looma-apps")
+#: Skills для агентов: с чего начать (looma), перенос проекта в сервис, работа с
+#: сервисом, свой движок на видеокарте.
+SKILLS = ("looma", "looma-port", "looma-apps", "looma-engine")
 
 #: Куда агенты читают skills: (у пользователя, в проекте). Пути — из
 #: документации агентов; `agents` — общий каталог открытого стандарта.
@@ -312,6 +314,10 @@ def entry_row(entry: dict) -> dict:
                            "running": len(entry.get("replicas") or [])}
         # Модель работает только на узлах своего владельца.
         row["own_nodes"] = list((entry.get("passport") or {}).get("contours") or []) == ["own"]
+        if (entry.get("recipe") or {}).get("own_node"):
+            row["node"] = entry["recipe"]["own_node"]
+        if entry.get("engine_update"):
+            row["engine_update"] = entry["engine_update"]
     for name in ("note", "review_note"):
         if entry.get(name):
             row[name] = entry[name]
@@ -368,7 +374,8 @@ def read_preset(path: Path) -> dict:
 
 def entry_payload(*, name: str, repo: str = "", engine: str = "", recipe: Optional[dict] = None,
                   base: str = "", adapter: str = "", preset: Optional[dict] = None,
-                  summary: str = "", always: bool = False, own: bool = False) -> dict:
+                  summary: str = "", always: bool = False, own: bool = False,
+                  node: str = "") -> dict:
     """Тело запроса на новую запись: одно из трёх — свои веса (`repo`), модель
     каталога с адаптером (`base` и `adapter`), настройка (`base` и `preset`)."""
     if not name:
@@ -384,13 +391,17 @@ def entry_payload(*, name: str, repo: str = "", engine: str = "", recipe: Option
     if summary:
         payload["summary"] = summary
     if preset is not None and base:
-        if always or recipe or engine or own:
+        if always or recipe or engine or own or node:
             raise EntryError("у настройки нет своих реплик и движка: она работает на репликах "
                              f"{base}")
         return {**payload, "base": base, "preset": preset}
     payload.update(min_replicas=1 if always else 0, max_replicas=1)
     if own:
         payload["contours"] = ["own"]         # модель встаёт только на свои узлы автора
+    if node:
+        if "/" not in engine:
+            raise EntryError("свой узел называют модели на движке автора (--engine автор/движок)")
+        payload["own_node"] = node            # и только на этот свой узел
     if base:
         return {**payload, "base": base, "adapter": adapter}
     return {**payload, **(recipe or {}), **({"repo": repo} if repo else {}),
@@ -441,9 +452,12 @@ def layer_lines(layer: dict) -> list:
         source = version.get("source") or {}
         # Движок-образ ревью не проходит: его версию одобряет сборка образа.
         states = IMAGE_STATES if version.get("form") == "image" else LAYER_STATES
-        line = (f"  версия {version['number']}: "
-                f"{states.get(version['status'], version['status'])}, "
-                f"коммит {str(source.get('commit') or '')[:12]}")
+        state = states.get(version["status"], version["status"])
+        if version.get("review") == "own" and version["status"] == "approved":
+            state = "без ревью, работает только на ваших узлах"
+        origin = (f"коммит {str(source.get('commit') or '')[:12]}" if source.get("commit")
+                  else "из папки (looma engine try)")
+        line = f"  версия {version['number']}: {state}, {origin}"
         if version.get("extends"):
             line += f", для движка {version['extends']}"
         if fee_text(version.get("fee")):
@@ -455,6 +469,103 @@ def layer_lines(layer: dict) -> list:
         for row in str(version.get("log") or "").splitlines()[-12:]:
             lines.append(f"      {row}")
     return lines
+
+
+def model_price_text(model: dict) -> str:
+    """Цена модели каталога строкой: за 1M токенов, изображение или секунду видео."""
+    parts = []
+    if model.get("price_in") is not None or model.get("price_out") is not None:
+        parts.append(f"вход {rubles(model.get('price_in') or 0)}, выход "
+                     f"{rubles(model.get('price_out') or 0)} за 1M токенов")
+    if model.get("price_image") is not None:
+        parts.append(f"{rubles(model['price_image'])} за изображение")
+    if model.get("price_second") is not None:
+        parts.append(f"{rubles(model['price_second'])} за секунду видео")
+    return (" · " + "; ".join(parts)) if parts else ""
+
+
+def node_lines(node: dict) -> list:
+    """Свой узел строками: состояние, карта, режим, работа, движки."""
+    title = node.get("title") or ""
+    head = node["node_id"] + (f" «{title}»" if title and title != node["node_id"] else "")
+    if node.get("pending"):
+        state = "ждёт подключения: команду ещё не запускали"
+    elif not node.get("online"):
+        state = "не на связи"
+    elif not node.get("accepts_tasks"):
+        state = "на связи, задач не берёт" + (f": {node['refusal']}" if node.get("refusal") else "")
+    else:
+        state = "на связи"
+    lines = [f"{head}: {state}"]
+    if node.get("online"):
+        card = node.get("gpu_name") or node.get("device") or "без видеокарты"
+        lines.append(f"  {card}, карт {node.get('gpus_free', 0)} из {node.get('gpus_total', 0)} "
+                     f"свободно, памяти свободно {node.get('vram_free_gib', 0)} ГиБ, агент "
+                     f"{node.get('agent_version') or '?'}")
+    lines.append("  " + ("делится с сетью" if node.get("shared") else "работает только на вас"))
+    accepts = node.get("accepts") or {}
+    if accepts.get("own") is False:
+        lines.append("  свой код без ревью не принимает (кабинет, «Узлы» → «Настройки»)")
+    for work in node.get("work") or []:
+        lines.append(f"  работает: {work.get('label') or work.get('kind')}"
+                     + ("" if work.get("mine") else " (сеть)"))
+    for engine in node.get("engines") or []:
+        if engine.get("mine") or engine.get("fits"):
+            lines.append(f"  движок {engine['ref']} v{engine.get('version')}: "
+                         + ("встанет" if engine.get("fits") else
+                            f"не встанет: {engine.get('refusal')}"))
+    if node.get("accrued"):
+        lines.append(f"  начислено с начала месяца: {rubles(node['accrued'])}")
+    return lines
+
+
+def income_lines(doc: dict) -> list:
+    """Доход автора за период строками: всё вместе, сервисы, модели, движки, узлы."""
+    out = []
+    overall = doc.get("overall") or {}
+    if overall:
+        out.append(f"всего начислено {rubles(overall.get('accrued', 0))}, комиссия "
+                   f"{rubles(overall.get('fee', 0))}, себестоимость "
+                   f"{rubles(overall.get('cost', 0))}, итог {rubles(overall.get('net', 0))}")
+    for app in doc.get("services") or []:
+        out.append(f"сервис {app.get('app')}: начислено {rubles(app.get('accrued', 0))}, "
+                   f"себестоимость {rubles(app.get('cost', 0))}, итог "
+                   f"{rubles(app.get('net', 0))}, клиентов {app.get('clients', 0)}")
+    compute = doc.get("compute") or {}
+    for model in compute.get("models") or []:
+        out.append(f"модель {model.get('model')}: вызовов {model.get('calls', 0)}, начислено "
+                   f"{rubles(model.get('accrued', 0))}, время карт "
+                   f"{rubles(model.get('cost', 0))}, итог {rubles(model.get('net', 0))}")
+    for engine in compute.get("engines") or []:
+        out.append(f"движок {engine.get('ref')}: вызовов {engine.get('calls', 0)}, доля "
+                   f"{rubles(engine.get('accrued', 0))}")
+    for node in compute.get("nodes") or []:
+        out.append(f"узел {node.get('node_id')}: {node.get('hours', 0)} ч карт, начислено "
+                   f"{rubles(node.get('accrued', 0))}")
+    if not out:
+        out.append("за этот период начислений нет")
+    out.append("выплат пока нет: это учёт")
+    return out
+
+
+def job_lines(doc: dict) -> list:
+    """Задание строками: состояние, ход, результат."""
+    line = f"{doc.get('id')}: {doc.get('status')}"
+    if doc.get("progress") is not None and doc.get("status") in ("queued", "running"):
+        line += f", {doc['progress']}%"
+    out = [line]
+    detail = doc.get("detail") or {}
+    if detail.get("model"):
+        out.append(f"  {detail.get('model')} {detail.get('method') or ''} "
+                   f"{detail.get('path') or ''}".rstrip())
+    error = doc.get("error")
+    if error:
+        out.append(f"  ошибка: {error.get('message') if isinstance(error, dict) else error}")
+    result = doc.get("result") or {}
+    if result:
+        out.append(f"  ответ службы: {result.get('status')}, {result.get('bytes', 0)} байт, "
+                   f"{result.get('content_type') or 'без типа'}")
+    return out
 
 
 def find_layer(looma: Looma, name: str) -> dict:

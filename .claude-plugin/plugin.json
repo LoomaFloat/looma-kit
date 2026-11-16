@@ -1,11 +1,23 @@
 {
   "name": "looma",
   "displayName": "Looma",
-  "version": "0.4.6",
-  "description": "Перенос проектов на площадку Looma Float и работа с сервисами: оценка, план, переделка под looma.yaml и модели Looma Float, деплой, проверка, отчёт, публикация в каталоге. Skills looma-port и looma-apps и MCP-сервер looma.",
-  "author": { "name": "Looma Float", "url": "https://loomafloat.ru" },
+  "version": "0.5.0",
+  "description": "Looma Float для ИИ-агентов: понять проект автора (сервис, движок, модель), предложить, что даст площадка, и провести весь путь. Перенос в сервис, свой движок на своих узлах без ревью, узлы, пробные вызовы, публикация. Skills looma, looma-port, looma-apps, looma-engine и MCP-сервер looma.",
+  "author": {
+    "name": "Looma Float",
+    "url": "https://loomafloat.ru"
+  },
   "homepage": "https://loomafloat.ru",
   "repository": "https://github.com/LoomaFloat/looma-kit",
   "license": "MIT",
-  "keywords": ["looma", "deploy", "hosting", "mcp", "ai-models", "marketplace"]
+  "keywords": [
+    "looma",
+    "deploy",
+    "hosting",
+    "mcp",
+    "ai-models",
+    "marketplace",
+    "gpu",
+    "engines"
+  ]
 }

@@ -8,6 +8,9 @@
     vectors = looma.embed("bge-m3", ["первый кусок", "второй кусок"], input_type="document")
     best = looma.rerank("bge-reranker-v2-m3", "вопрос", ["кусок 1", "кусок 2"], top_n=1)
     mp4 = looma.video("MiniMax-H3", "A red fox in a snowy forest", quality="fast").content()
+    answer = looma.run("anna/solver", "/tasks", body=b"...")          # модель со своим API
+    job = looma.run("anna/solver", "/render", body={"frames": 240}, wait=False)
+    result = job.wait().content()                                      # долгое вычисление
 
 Внутри процесса сервиса ключ — `LOOMA_APP_TOKEN`, адрес — `LOOMA_API_URL`:
 платформа кладёт их сама, `Looma()` находит их без настроек.
@@ -115,6 +118,87 @@ def client_of(headers) -> Optional[str]:
     return None
 
 
+class Answer:
+    """Ответ модели со своим API: статус, заголовки и тело как их отдала служба."""
+
+    def __init__(self, status: int, headers: dict, content: bytes) -> None:
+        self.status = status
+        self.headers = {str(k).lower(): v for k, v in (headers or {}).items()}
+        self.content = content
+
+    @property
+    def text(self) -> str:
+        return self.content.decode("utf-8", errors="replace")
+
+    def json(self):
+        return json.loads(self.content or b"null")
+
+    def __repr__(self) -> str:
+        return f"<Answer {self.status}, {len(self.content)} байт>"
+
+
+class Job:
+    """Задание площадки (`/v1/jobs`): долгий вызов модели со своим API и
+    другие задания. Статусы: queued, running, succeeded, failed, cancelled."""
+
+    DONE = ("succeeded", "failed", "cancelled")
+
+    def __init__(self, looma: "Looma", doc: dict) -> None:
+        self.looma = looma
+        self.doc = doc
+
+    @property
+    def id(self) -> str:
+        return self.doc["id"]
+
+    @property
+    def status(self) -> str:
+        return self.doc.get("status", "")
+
+    @property
+    def progress(self) -> Optional[int]:
+        return self.doc.get("progress")
+
+    def refresh(self) -> "Job":
+        self.doc = get_json(self.looma.url(f"/v1/jobs/{_q(self.id)}"), key=self.looma.key)
+        return self
+
+    def wait(self, *, poll_s: float = 10.0, timeout_s: float = 24 * 3600.0) -> "Job":
+        """Дождаться конца. Отказ службы (статус 400 и выше) — не ошибка
+        задания: его тело тоже результат, смотрите `result["status"]`."""
+        deadline = time.monotonic() + timeout_s
+        if self.status not in self.DONE:
+            self.refresh()
+        while self.status not in self.DONE:
+            if time.monotonic() > deadline:
+                raise LoomaError(0, f"задание {self.id} не готово за {timeout_s:.0f} с")
+            time.sleep(poll_s)
+            self.refresh()
+        if self.status != "succeeded" and not (self.doc.get("result") or {}).get("url"):
+            error = self.doc.get("error")
+            why = error.get("message") if isinstance(error, dict) else error
+            raise LoomaError(0, f"задание {self.id}: {self.status}" + (f" — {why}" if why else ""))
+        return self
+
+    def content(self) -> bytes:
+        """Тело итогового ответа службы (ждёт, если задание ещё идёт)."""
+        if self.status not in self.DONE:
+            self.wait()
+        return self.looma.download(f"/v1/jobs/{_q(self.id)}/content")
+
+    def save(self, path: Union[str, Path]) -> Path:
+        target = Path(path)
+        target.write_bytes(self.content())
+        return target
+
+    def cancel(self) -> "Job":
+        _s, _h, body = request("DELETE", self.looma.url(f"/v1/jobs/{_q(self.id)}"),
+                               key=self.looma.key)
+        if body:
+            self.doc = json.loads(body)
+        return self
+
+
 class Looma:
     def __init__(self, api_url: Optional[str] = None, key: Optional[str] = None,
                  client: Optional[str] = None) -> None:
@@ -125,6 +209,7 @@ class Looma:
         self.apps = Apps(self)
         self.entries = Entries(self)
         self.engines = Engines(self)
+        self.nodes = Nodes(self)
 
     def for_client(self, client: Optional[str]) -> "Looma":
         """Те же ключ и адрес, вызовы моделей — для клиента `client`."""
@@ -278,6 +363,48 @@ class Looma:
                         key=self.key, headers=self._headers())
         job = Video(self, doc)
         return job.wait() if wait else job
+
+    def run(self, model: str, path: str = "/", *, method: str = "POST", body=None,
+            headers: Optional[dict] = None, wait: bool = True) -> Union[Answer, Job]:
+        """Вызов модели со своим API (движок с `kinds: [api]`): запрос уходит
+        службе как есть, ответ возвращается как есть. `model` — `автор/модель`,
+        `path` — путь у службы со строкой запроса. `body`: байты, строка или
+        объект (уйдёт JSON).
+
+        `wait=False` — долгое вычисление: площадка принимает запрос заданием
+        (`Prefer: respond-async`) и доводит до конца сама; ответ — `Job`."""
+        author, _, name = str(model).partition("/")
+        if not author or not name:
+            raise LoomaError(400, "model: автор/модель, например anna/solver")
+        path = "/" + str(path or "/").lstrip("/")
+        outgoing = {**self._headers(), **(headers or {})}
+        data: Optional[bytes]
+        if body is None:
+            data = None
+        elif isinstance(body, (bytes, bytearray)):
+            data = bytes(body)
+        elif isinstance(body, str):
+            data = body.encode()
+        else:
+            data = json.dumps(body, ensure_ascii=False).encode()
+            outgoing.setdefault("Content-Type", "application/json")
+        if not wait:
+            outgoing["Prefer"] = "respond-async"
+        url = self.url(f"/v1/run/{_q(author)}/{_q(name)}{path}")
+        status, head, content = request(method.upper(), url, key=self.key, body=data,
+                                        headers=outgoing, timeout=CALL_TIMEOUT_S)
+        if not wait and status == 202:
+            return Job(self, json.loads(content))
+        return Answer(status, head, content)
+
+    def job(self, job_id: str) -> Job:
+        """Задание по номеру: `run_…` и другие."""
+        return Job(self, {"id": job_id}).refresh()
+
+    def income(self, period: str = "month") -> dict:
+        """Доход автора за период (`week`, `month`, `all`): сервисы, свои
+        модели, движки и узлы. Выплат пока нет: это учёт."""
+        return get_json(self.url(f"/v1/income?period={_q(period)}"), key=self.key)
 
     def whoami(self) -> dict:
         return get_json(self.url("/api/me"), key=self.key)
@@ -480,6 +607,10 @@ class Entries:
         _s, _h, body = request("DELETE", self._url(entry_id), key=self.looma.key)
         return json.loads(body) if body else {}
 
+    def logs(self, entry_id, tail: int = 200) -> dict:
+        """Хвост лога реплик своей модели: почему движок не встал или падает."""
+        return get_json(self._url(entry_id, "logs") + f"?tail={int(tail)}", key=self.looma.key)
+
     def check(self, payload: dict) -> dict:
         """Проверить веса без запуска: формат, размер, встанет ли модель в сети."""
         return self._send("POST", self.looma.url("/api/models/check"), payload)
@@ -519,16 +650,26 @@ class Engines:
         return self.mine()["layers"]
 
     def submit(self, *, repo: str, commit: str, path: str = "", kind: str = "engine",
-               fee: Optional[dict] = None) -> dict:
+               fee: Optional[dict] = None, own: bool = False) -> dict:
         """Подать версию на ревью. То же содержимое второй раз — прежняя версия.
         `fee` — доля автора движка с чужих вызовов, копейки за 1M токенов
-        (`price_in`, `price_out`); закрепляется за версией."""
+        (`price_in`, `price_out`); закрепляется за версией. `own=True` — версия
+        без ревью для своих узлов: одобрена сразу, работает только у автора."""
         payload = {"repo": repo, "commit": commit, "kind": kind}
         if path:
             payload["path"] = path
         if fee:
             payload["fee"] = fee
+        if own:
+            payload["own"] = True
         return send_json("POST", self._url(), payload, key=self.looma.key)
+
+    def try_archive(self, archive: bytes, *, kind: str = "engine") -> dict:
+        """Версия для своих узлов из архива папки движка (tar.gz): без
+        GitHub и без ревью. Работает только на узлах автора."""
+        payload = {"own": True, "kind": kind,
+                   "archive": base64.b64encode(archive).decode()}
+        return send_json("POST", self._url(), payload, key=self.looma.key, timeout=300.0)
 
     def share(self, ref: str, public: bool) -> dict:
         """Открыть слой другим авторам или закрыть. `ref` — `автор/слой`."""
@@ -537,4 +678,49 @@ class Engines:
                          key=self.looma.key)
 
 
-__all__ = ["Apps", "Engines", "Entries", "Looma", "Video", "client_of"]
+class Nodes:
+    """Свои узлы автора: машины с видеокартой, подключённые к площадке.
+
+    Ключом для выкатки (`looma login`) узел подключают «только для себя»,
+    переименовывают и отключают. Делиться узлом с сетью и выбирать, чей код он
+    принимает, решает владелец в кабинете автора."""
+
+    def __init__(self, looma: Looma) -> None:
+        self.looma = looma
+
+    def _url(self, *parts) -> str:
+        return self.looma.url("/api/nodes" + "".join(f"/{_q(str(p))}" for p in parts))
+
+    def mine(self) -> dict:
+        """`{"nodes": […], "keys": […]}`: узлы с состоянием, работой, движками,
+        которые на них встанут, и начисленным."""
+        return get_json(self._url(), key=self.looma.key)
+
+    def list(self) -> List[dict]:
+        return self.mine()["nodes"]
+
+    def find(self, name: str) -> Optional[dict]:
+        """Узел по имени или подписи."""
+        return next((n for n in self.list() if name in (n["node_id"], n.get("title"))), None)
+
+    def connect(self, label: str = "") -> dict:
+        """Ключ и команда подключения новой машины. Ключ показывается один
+        раз: команду запускают на машине с видеокартой."""
+        return send_json("POST", self._url("keys"), {"label": label}, key=self.looma.key)
+
+    def rename(self, node_id: str, title: str) -> dict:
+        return send_json("PATCH", self._url(node_id), {"title": title}, key=self.looma.key)
+
+    def disconnect(self, key_id: str) -> dict:
+        """Отозвать ключ узла: машина отключается, работа на ней снимается."""
+        _s, _h, body = request("DELETE", self._url("keys", key_id), key=self.looma.key)
+        return json.loads(body) if body else {}
+
+    def forget(self, node_id: str) -> dict:
+        """Убрать из списка узел, которого нет на связи."""
+        _s, _h, body = request("DELETE", self._url(node_id), key=self.looma.key)
+        return json.loads(body) if body else {}
+
+
+__all__ = ["Answer", "Apps", "Engines", "Entries", "Job", "Looma", "Nodes", "Video",
+           "client_of"]
