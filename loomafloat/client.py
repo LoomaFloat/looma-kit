@@ -631,10 +631,11 @@ class Entries:
 class Engines:
     """Свои движки и расширения автора — то, на чём стоит `looma engine`.
 
-    Движок публикуют из открытого репозитория на GitHub: репозиторий, коммит
-    целиком и папка с `looma-engine.yaml`. Версия уходит на ревью площадки;
-    после одобрения на движке можно собирать модели (`looma model add
-    --engine автор/движок`)."""
+    Движок публикуют папкой из рабочей среды, как сервис (`submit_archive`):
+    папка с `looma-engine.yaml` упаковывается и уходит на ревью площадки. По
+    желанию вместо папки называют открытый репозиторий на GitHub и коммит
+    (`submit`). После одобрения на движке собирают модели (`looma model add
+    --engine автор/движок`). На свои узлы без ревью — `try_archive`."""
 
     def __init__(self, looma: Looma) -> None:
         self.looma = looma
@@ -651,7 +652,8 @@ class Engines:
 
     def submit(self, *, repo: str, commit: str, path: str = "", kind: str = "engine",
                fee: Optional[dict] = None, own: bool = False) -> dict:
-        """Подать версию на ревью. То же содержимое второй раз — прежняя версия.
+        """Подать версию на ревью из репозитория на GitHub (необязательный путь;
+        основной — `submit_archive`). То же содержимое второй раз — прежняя версия.
         `fee` — доля автора движка с чужих вызовов, копейки за 1M токенов
         (`price_in`, `price_out`); закрепляется за версией. `own=True` — версия
         без ревью для своих узлов: одобрена сразу, работает только у автора."""
@@ -663,6 +665,35 @@ class Engines:
         if own:
             payload["own"] = True
         return send_json("POST", self._url(), payload, key=self.looma.key)
+
+    def submit_archive(self, archive: bytes, *, kind: str = "engine",
+                       fee: Optional[dict] = None, origin: str = "") -> dict:
+        """Подать версию на ревью папкой движка: архив (tar.gz, как его делает
+        `ops.pack_engine`) прямо из рабочей среды, без GitHub. `origin` —
+        необязательная ссылка на код (репозиторий, страница); площадка её не
+        проверяет, только показывает рядом с версией."""
+        payload = {"kind": kind, "archive": base64.b64encode(archive).decode()}
+        if fee:
+            payload["fee"] = fee
+        if origin:
+            payload["origin"] = origin
+        return send_json("POST", self._url(), payload, key=self.looma.key, timeout=300.0)
+
+    def code(self, ref: str, *, number: Optional[int] = None) -> dict:
+        """Код одобренной версии движка автора: источник, команда, зависимости,
+        файлы. Его читает любой, кто вошёл: например, владелец узла, решающий,
+        какие движки принимать. Без номера — последняя одобренная версия."""
+        author, _, name = ref.partition("/")
+        query = f"?version={int(number)}" if number else ""
+        return get_json(self._url(author, name, "code") + query, key=self.looma.key)
+
+    def code_file(self, ref: str, path: str, *, number: Optional[int] = None) -> dict:
+        """Один файл одобренной версии, текстом."""
+        author, _, name = ref.partition("/")
+        query = {"path": path, **({"version": str(int(number))} if number else {})}
+        return get_json(self._url(author, name, "code", "file") + "?"
+                        + urllib.parse.urlencode(query),
+                        key=self.looma.key)
 
     def try_archive(self, archive: bytes, *, kind: str = "engine") -> dict:
         """Версия для своих узлов из архива папки движка (tar.gz): без

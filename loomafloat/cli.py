@@ -12,6 +12,7 @@
     looma publish                  карточку и цены — в маркетплейс (через модерацию)
     looma model add …              своя модель в каталоге: веса, адаптер или настройка
     looma engine try [папка]       свой движок на своих узлах, без ревью
+    looma engine submit [папка]    версия движка из папки на ревью, для сети
     looma engine submit …          свой движок: версия из репозитория на ревью площадки
     looma node connect             подключить свою машину с видеокартой
     looma call <модель> …          пробный вызов модели: чат, изображение, свой API
@@ -273,8 +274,7 @@ def cmd_engine(args) -> None:
             doc = looma.engines.mine()
             if not doc["layers"]:
                 say("своих движков нет. На своих узлах без ревью: `looma engine try <папка>`; "
-                    "для сети: `looma engine submit --repo https://github.com/вы/репозиторий "
-                    "--commit <коммит>`")
+                    "для сети, через ревью: `looma engine submit <папка>`")
                 return
             for layer in doc["layers"]:
                 for line in ops.layer_lines(layer):
@@ -300,16 +300,35 @@ def cmd_engine(args) -> None:
                    f"{version}`" if kind == "engine" else
                    "Расширение подключают в модель полем extensions"))
         elif action == "submit":
-            if not args.repo or not args.commit:
-                raise Stop("откуда собрать? looma engine submit --repo https://github.com/вы/"
-                           "репозиторий --commit <коммит целиком> [--path папка]")
+            github = bool(args.repo or args.commit)
+            if github and (not args.repo or not args.commit):
+                raise Stop("из GitHub нужны оба: --repo https://github.com/вы/репозиторий "
+                           "--commit <коммит целиком> [--path папка]. Или подайте папку: "
+                           "`looma engine submit <папка>`")
+            if github and name:
+                raise Stop("либо папка, либо --repo и --commit: вместе не нужно")
             if not looma.engines.mine().get("handle"):
                 raise Stop("сначала задайте имя автора, с него начинаются имена движков: "
                            "`looma model name <имя>`")
-            made = looma.engines.submit(repo=args.repo, commit=args.commit,
-                                        path=args.path or "",
-                                        kind="extension" if args.extension else "engine",
-                                        fee=ops.fee_of(args.fee), own=args.own)
+            if github:
+                made = looma.engines.submit(repo=args.repo, commit=args.commit,
+                                            path=args.path or "",
+                                            kind="extension" if args.extension else "engine",
+                                            fee=ops.fee_of(args.fee), own=args.own)
+            else:
+                root = Path(name or ".")
+                try:
+                    data, kind, files = ops.pack_engine(root)
+                except PackError as exc:
+                    raise Stop(str(exc)) from None
+                say(f"папка {root.resolve().name}: {len(files)} файлов, "
+                    f"{len(data) // 1024} КБ в архиве")
+                if args.own:
+                    made = looma.engines.try_archive(data, kind=kind)
+                else:
+                    made = looma.engines.submit_archive(data, kind=kind,
+                                                        fee=ops.fee_of(args.fee),
+                                                        origin=args.origin or "")
             for line in ops.layer_lines(made):
                 say(line)
             if args.own:
@@ -322,6 +341,17 @@ def cmd_engine(args) -> None:
                  "ход виден в `looma engine`. Собранную версию" if image else
                  f"версия {made.get('submitted')} ждёт проверки площадки. Одобренную версию")
                 + f" берут в модель: `looma model add <имя> --engine {made['ref']}`")
+        elif action == "code":
+            if not name or "/" not in name:
+                raise Stop("чей движок? looma engine code автор/движок [--file путь] "
+                           "[--number версия]")
+            if args.file:
+                doc = looma.engines.code_file(name, args.file, number=args.number)
+                print("(файл не текстовый)" if doc.get("binary") else doc.get("text", ""),
+                      end="" if str(doc.get("text", "")).endswith("\n") else "\n")
+                return
+            for line in ops.code_lines(looma.engines.code(name, number=args.number)):
+                say(line)
         elif action in ("show", "open", "close"):
             if not name:
                 raise Stop(f"какой движок? looma engine {action} <имя>")
@@ -1030,17 +1060,26 @@ def parser() -> argparse.ArgumentParser:
     p = command("engine", cmd_engine, "свои движки и расширения: на свои узлы без ревью, на "
                                       "ревью для сети, открыть авторам")
     p.add_argument("action", nargs="?", default="list",
-                   choices=("list", "try", "submit", "show", "open", "close"),
+                   choices=("list", "try", "submit", "show", "open", "close", "code"),
                    help="list — свои движки (по умолчанию); try — версия из папки на свои узлы, "
-                        "без ревью; submit — подать версию на ревью; show — подробно; open — "
-                        "открыть другим авторам; close — закрыть")
+                        "без ревью; submit — подать версию из папки на ревью; show — подробно; "
+                        "open — открыть другим авторам; close — закрыть; code — код "
+                        "одобренной версии любого движка (автор/движок)")
     p.add_argument("name", nargs="?",
-                   help="имя движка или расширения; у try — папка с looma-engine.yaml")
+                   help="имя движка или расширения; у try и submit — папка с "
+                        "looma-engine.yaml (по умолчанию текущая); у code — автор/движок")
     p.add_argument("--own", action="store_true",
-                   help="submit: версия из репозитория без ревью, только на свои узлы")
-    p.add_argument("--repo", help="submit: открытый репозиторий на GitHub")
-    p.add_argument("--commit", help="submit: коммит целиком, 40 знаков")
-    p.add_argument("--path", help="submit: папка с looma-engine.yaml, если он не в корне")
+                   help="submit: версия без ревью, только на свои узлы (как try)")
+    p.add_argument("--origin", help="submit из папки: ссылка на код, если он где-то "
+                                    "опубликован (площадка её не проверяет)")
+    p.add_argument("--repo", help="submit, по желанию вместо папки: открытый репозиторий "
+                                  "на GitHub")
+    p.add_argument("--commit", help="submit с --repo: коммит целиком, 40 знаков")
+    p.add_argument("--path", help="submit с --repo: папка с looma-engine.yaml, если он не в "
+                                  "корне")
+    p.add_argument("--file", help="code: показать один файл версии")
+    p.add_argument("--number", type=int, help="code: номер версии (по умолчанию последняя "
+                                              "одобренная)")
     p.add_argument("--extension", action="store_true",
                    help="submit: это расширение движка (looma-extension.yaml)")
     p.add_argument("--fee", action="append", metavar="единица=рубли",

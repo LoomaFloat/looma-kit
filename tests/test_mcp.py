@@ -240,7 +240,9 @@ def test_own_engine_tools(session):
     s.request("initialize", {"protocolVersion": "2025-03-26"})
     tools = {t["name"]: t for t in s.request("tools/list")["result"]["tools"]}
     assert {"looma_engine_list", "looma_engine_submit", "looma_engine_share"} <= set(tools)
-    assert tools["looma_engine_submit"]["inputSchema"]["required"] == ["repo", "commit"]
+    # Основной путь — папка, GitHub по желанию: обязательных полей нет.
+    assert "required" not in tools["looma_engine_submit"]["inputSchema"]
+    assert "directory" in tools["looma_engine_submit"]["inputSchema"]["properties"]
     commit = "c" * 40
     error, text = s.tool("looma_engine_submit", repo="https://github.com/anna/echo",
                          commit=commit)
@@ -305,3 +307,31 @@ def test_engine_on_own_nodes_nodes_and_calls(session):
     assert not error and done["status"] == "succeeded" and out.read_bytes() == b"RESULT"
     error, income = s.tool("looma_income", period="week")
     assert not error and income["payouts"] is False
+
+
+def test_engine_from_a_folder_to_review_and_reading_code(session, tmp_path):
+    """Движок на ревью подаётся папкой, как сервис; код чужого движка читается."""
+    s, state, _tmp = session
+    s.request("initialize", {"protocolVersion": "2025-03-26"})
+    state.handle = "anna"
+    folder = tmp_path / "solver"
+    (folder / "solver").mkdir(parents=True)
+    (folder / "looma-engine.yaml").write_text("name: echo\n")
+    (folder / "solver" / "serve.py").write_text("print('ok')\n")
+    error, text = s.tool("looma_engine_submit")
+    assert error and "directory" in text
+    error, text = s.tool("looma_engine_submit", directory=str(folder),
+                         repo="https://github.com/anna/echo", commit="c" * 40)
+    assert error and "вместе не нужно" in text
+    error, made = s.tool("looma_engine_submit", directory=str(folder),
+                         origin="https://example.com/anna/echo")
+    assert not error and made["submitted"] == 1 and made["files"] == 2
+    version = made["versions"][0]
+    assert version["status"] == "pending" and version["source"]["upload"]
+    assert version["source"]["origin"] == "https://example.com/anna/echo"
+    error, code = s.tool("looma_engine_code", engine="bob/solver")
+    assert not error and code["number"] == 2 and code["files"][0]["name"] == "solver/serve.py"
+    error, file = s.tool("looma_engine_code", engine="bob/solver", file="solver/serve.py")
+    assert not error and file["text"].startswith("print")
+    error, text = s.tool("looma_engine_code", engine="anna/echo")
+    assert error and "нет одобренной версии" in text

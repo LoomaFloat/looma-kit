@@ -439,6 +439,25 @@ def fee_of(pairs) -> dict:
     return fee
 
 
+def code_lines(code: dict) -> list:
+    """Код одобренной версии движка — строками: откуда, команда, файлы."""
+    source = code.get("source") or {}
+    if source.get("commit"):
+        where = f"{source.get('repo')} @ {str(source.get('commit'))[:12]}"
+    else:
+        where = f"папка автора {source.get('upload') or ''}".strip()
+        if source.get("origin"):
+            where += f", ссылка автора {source['origin']} (площадка её не проверяет)"
+    lines = [f"{code['ref']}: версия {code['number']}, {LAYER_KINDS.get(code.get('kind'), '')}",
+             f"  источник: {where}",
+             f"  команда: {' '.join(code.get('command') or []) or '—'}",
+             f"  зависимости: {', '.join(code.get('requirements') or []) or 'нет'}",
+             "  файлы:"]
+    lines += [f"    {f['name']} ({f['size']} Б)" for f in code.get("files") or []]
+    lines.append(f"  файл целиком: looma engine code {code['ref']} --file <путь>")
+    return lines
+
+
 def layer_lines(layer: dict) -> list:
     """Движок или расширение автора с версиями — строками для человека."""
     head = f"{layer['ref']}: {LAYER_KINDS.get(layer['kind'], layer['kind'])}"
@@ -456,7 +475,7 @@ def layer_lines(layer: dict) -> list:
         if version.get("review") == "own" and version["status"] == "approved":
             state = "без ревью, работает только на ваших узлах"
         origin = (f"коммит {str(source.get('commit') or '')[:12]}" if source.get("commit")
-                  else "из папки (looma engine try)")
+                  else f"из папки {source.get('upload') or ''}".strip())
         line = f"  версия {version['number']}: {state}, {origin}"
         if version.get("extends"):
             line += f", для движка {version['extends']}"

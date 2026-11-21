@@ -57,7 +57,7 @@ INSTRUCTIONS = """Looma Float размещает сервисы с GPU-моде�
 9. Свой код на видеокарте (движок): looma_engine_try ставит папку на свои узлы
    автора без ревью; проверка — looma_model_add на этом движке, затем
    looma_call. В сеть и другим авторам — только после ревью (looma_engine_submit
-   по просьбе пользователя).
+   с папкой движка, по просьбе пользователя; GitHub не нужен, но можно).
 10. Узлы: looma_node_connect даёт команду с ключом. Ключ не пересказывай; команду
    запускает пользователь на машине с видеокартой (или ты, если он попросил и
    это его машина). Делиться узлом с сетью и выбирать принимаемый код —
@@ -149,23 +149,41 @@ TOOLS = [
                     "engine `автор/движок`.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "looma_engine_submit",
-     "description": "Подать версию своего движка или расширения на ревью площадки. Код берётся "
-                    "из открытого репозитория на GitHub на названном коммите: в папке лежит "
-                    "looma-engine.yaml (или looma-extension.yaml) и пакет на Python. Версия "
-                    "ждёт проверки; новая версия проходит ревью заново. Только по прямой "
-                    "просьбе пользователя.",
+     "description": "Подать версию своего движка или расширения на ревью площадки. Основной "
+                    "путь, как у сервиса: папка движка из рабочей среды (directory) с "
+                    "looma-engine.yaml (или looma-extension.yaml) и пакетом на Python "
+                    "упаковывается и уходит на ревью. По желанию вместо папки — открытый "
+                    "репозиторий на GitHub и коммит (repo, commit, path). Версия ждёт "
+                    "проверки; новая версия проходит ревью заново. Только по прямой просьбе "
+                    "пользователя.",
      "inputSchema": {"type": "object", "properties": {
-         "repo": {"type": "string", "description": "https://github.com/автор/репозиторий"},
-         "commit": {"type": "string", "description": "коммит целиком, 40 знаков"},
-         "path": {"type": "string", "description": "папка с манифестом, если он не в корне"},
-         "extension": {"type": "boolean", "description": "это расширение движка"},
+         "directory": {"type": "string", "description": "папка движка (основной путь)"},
+         "origin": {"type": "string", "description": "с папкой: ссылка https:// на код, если "
+                                                     "он где-то опубликован (не проверяется)"},
+         "repo": {"type": "string", "description": "по желанию вместо папки: "
+                                                   "https://github.com/автор/репозиторий"},
+         "commit": {"type": "string", "description": "с repo: коммит целиком, 40 знаков"},
+         "path": {"type": "string", "description": "с repo: папка с манифестом, если он не "
+                                                   "в корне"},
+         "extension": {"type": "boolean", "description": "с repo: это расширение движка (у "
+                                                         "папки вид берётся из манифеста)"},
          "fee": {"type": "object", "description": "доля автора движка с чужих вызовов, "
                                                   "копейки: {price_call} за вызов модели со "
                                                   "своим API, {price_in, price_out} за 1M "
                                                   "токенов у модели чата"},
          "own": {"type": "boolean", "description": "версия без ревью, только на свои узлы "
-                                                   "(как looma_engine_try, но из репозитория)"}},
-         "required": ["repo", "commit"]}},
+                                                   "(как looma_engine_try)"}}}},
+    {"name": "looma_engine_code",
+     "description": "Код одобренной версии любого движка автора: откуда собран, команда "
+                    "запуска, зависимости, файлы; с file — один файл текстом. Его видит любой, "
+                    "кто вошёл. Нужен, например, владельцу узла, который решает, какие движки "
+                    "авторов принимать, или автору, который строит модель на чужом движке.",
+     "inputSchema": {"type": "object", "properties": {
+         "engine": {"type": "string", "description": "автор/движок"},
+         "file": {"type": "string", "description": "путь файла в версии"},
+         "number": {"type": "integer", "description": "номер версии; без него последняя "
+                                                      "одобренная"}},
+         "required": ["engine"]}},
     {"name": "looma_engine_try",
      "description": "Поставить свой движок или расширение из папки на свои узлы автора, без "
                     "ревью и без GitHub: папка с looma-engine.yaml (или looma-extension.yaml) "
@@ -501,13 +519,30 @@ class Server:
         doc = self.looma.engines.mine()
         return {"handle": doc.get("handle") or "", "engines": doc["layers"]}
 
-    def looma_engine_submit(self, repo: str, commit: str, path: str = "",
-                            extension: bool = False, fee: Optional[dict] = None,
-                            own: bool = False):
+    def looma_engine_submit(self, directory: str = "", repo: str = "", commit: str = "",
+                            path: str = "", extension: bool = False,
+                            fee: Optional[dict] = None, own: bool = False, origin: str = ""):
         self._need_handle()
-        return self.looma.engines.submit(repo=repo, commit=commit, path=path,
-                                         kind="extension" if extension else "engine", fee=fee,
-                                         own=own)
+        if repo or commit:
+            if directory:
+                raise ops.OpError("либо directory (папка движка), либо repo и commit: "
+                                  "вместе не нужно")
+            if not repo or not commit:
+                raise ops.OpError("из GitHub нужны оба: repo и commit (40 знаков)")
+            return self.looma.engines.submit(repo=repo, commit=commit, path=path,
+                                             kind="extension" if extension else "engine",
+                                             fee=fee, own=own)
+        if not directory:
+            raise ops.OpError("какую папку подать? directory: папка с looma-engine.yaml")
+        data, kind, files = ops.pack_engine(Path(directory))
+        made = (self.looma.engines.try_archive(data, kind=kind) if own else
+                self.looma.engines.submit_archive(data, kind=kind, fee=fee, origin=origin))
+        return {**made, "files": len(files)}
+
+    def looma_engine_code(self, engine: str, file: str = "", number: Optional[int] = None):
+        if file:
+            return self.looma.engines.code_file(engine, file, number=number)
+        return self.looma.engines.code(engine, number=number)
 
     def _need_handle(self) -> None:
         if not self.looma.engines.mine().get("handle"):

@@ -2,9 +2,9 @@
 name: looma-engine
 description: Свой код на видеокарте на Looma Float: оформить движок, проверить у себя и на своём узле без ревью, модель на нём, пробные вызовы, долгие вычисления, ревью для сети, доля.
 license: MIT
-compatibility: Нужны CLI looma (github.com/LoomaFloat/looma-kit) 0.5.0+, вход `looma login` и имя автора; для проверки на своём узле машина с NVIDIA.
+compatibility: Нужны CLI looma (github.com/LoomaFloat/looma-kit) 0.6.0+, вход `looma login` и имя автора; для проверки на своём узле машина с NVIDIA.
 metadata:
-  version: "0.5.0"
+  version: "0.6.0"
   homepage: "https://github.com/LoomaFloat/looma-kit"
 ---
 
@@ -146,23 +146,30 @@ looma node list                               # движок «не встане
 
 Только по просьбе автора. Предложи, когда модель работает и нужна не только на его узлах.
 
-1. Код в открытый репозиторий на GitHub, коммит целиком (40 знаков).
-2. На ревью:
+1. На ревью, папкой из рабочей среды, как сервис (MCP: `looma_engine_submit` с
+   `directory`):
 
    ```bash
-   looma engine submit --repo https://github.com/anna/engines --commit <40 знаков> \
-     --path engine [--fee call=0.2 | --fee in=1 --fee out=3]
+   looma engine submit engine/ [--fee call=0.2 | --fee in=1 --fee out=3]
    looma engine show solver                    # ждёт проверки, одобрена или отклонена с причиной
    ```
+
+   GitHub не нужен. Если код где-то опубликован, ссылку можно приложить: `--origin
+   https://…` (площадка её не проверяет, только показывает рядом с версией). Автор держит
+   код в открытом репозитории и хочет подавать коммитом: `looma engine submit --repo
+   https://github.com/anna/engines --commit <40 знаков> --path engine`.
 
    Ревью читает код целиком: движок делает то, что о нём написано; зависимости явные; не
    трогает чужие данные на узле и не ходит в сеть без нужды. Отказ: поправить и подать
    новой версией.
-3. После одобрения модель переходит на версию с ревью и выходит в сеть:
+   Код одобренной версии видит любой, кто вошёл на площадку (`looma engine code
+   автор/движок`): прежде всего владельцы узлов, которые решают, принимать ли движок.
+   Скажи автору об этом до подачи.
+2. После одобрения модель переходит на версию с ревью и выходит в сеть:
    `looma model set solver --engine-version <N> --network`.
-4. Цена модели: `looma model set solver --price call=1.5` (за вызов или единицу), у чата
+3. Цена модели: `looma model set solver --price call=1.5` (за вызов или единицу), у чата
    `--price in=… --price out=…`; публикация модели: `looma model publish solver`.
-5. Другим авторам: `looma engine open solver`. Доля (`--fee`) идёт автору движка с чужих
+4. Другим авторам: `looma engine open solver`. Доля (`--fee`) идёт автору движка с чужих
    вызовов; со своих вызовов на своих узлах не берётся. Выплат пока нет.
 
 ## Правила

@@ -9,7 +9,7 @@
 (`LOOMA_APP_TOKEN`, `LOOMA_API_URL`); на машине автора — `looma login`.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from loomafloat.client import Answer, Apps, Job, Looma, Video, client_of  # noqa: E402
 from loomafloat.http import LoomaError  # noqa: E402

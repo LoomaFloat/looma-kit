@@ -182,9 +182,9 @@ def make_handler(state: State):
                     return self._error(409, "сначала задайте имя автора: слои зовутся "
                                             "`автор/слой`")
                 if doc.get("archive"):
-                    # Версия из папки (`looma engine try`): только для своих узлов.
-                    if not doc.get("own"):
-                        return self._error(400, "архивом подаётся только версия для своих узлов")
+                    # Версия из папки: на свои узлы (`try`) или на ревью (`submit`).
+                    if doc.get("repo") or doc.get("commit"):
+                        return self._error(400, "либо папка движка архивом, либо репозиторий")
                     with tarfile.open(fileobj=io.BytesIO(base64.b64decode(doc["archive"])),
                                       mode="r:gz") as tar:
                         names = [m.name for m in tar.getmembers()]
@@ -201,8 +201,11 @@ def make_handler(state: State):
                     layers.append(layer)
                 number = len(layer["versions"]) + 1
                 own = bool(doc.get("own"))
-                source = {"upload": "abcdef0123456789", "path": ""} if doc.get("archive") else \
-                    {"repo": doc["repo"], "commit": doc["commit"], "path": doc.get("path", "")}
+                source = ({"upload": "abcdef0123456789", "path": "",
+                           **({"origin": doc["origin"]} if doc.get("origin") else {})}
+                          if doc.get("archive") else
+                          {"repo": doc["repo"], "commit": doc["commit"],
+                           "path": doc.get("path", "")})
                 layer["versions"].insert(0, {
                     "number": number, "status": "approved" if own else "pending", "note": "",
                     "files": 2, "review": "own" if own else "reviewed",
@@ -212,6 +215,20 @@ def make_handler(state: State):
                 if own:
                     layer["own"] = number
                 return self._send(200, {**layer, "submitted": number})
+            if parts[2:3] == ["code"] and method == "GET":
+                # Код одобренной версии любого движка: читает любой, кто вошёл.
+                ref = "/".join(parts[:2])
+                if ref != "bob/solver":
+                    return self._error(404, f"у слоя {ref} нет одобренной версии с ревью")
+                if parts[3:4] == ["file"]:
+                    return self._send(200, {"name": "solver/serve.py", "number": 2,
+                                            "binary": False, "text": "print('решаю')\n"})
+                return self._send(200, {
+                    "ref": ref, "kind": "engine", "title": "Решатель", "number": 2,
+                    "source": {"upload": "0123456789abcdef", "path": "",
+                               "origin": "https://example.com/bob/solver"},
+                    "command": ["python", "-m", "solver.serve"], "requirements": ["numpy"],
+                    "files": [{"name": "solver/serve.py", "size": 21}]})
             layer = next((x for x in layers if x["ref"] == "/".join(parts[:2])), None)
             if layer is None:
                 return self._error(404, f"слоя {'/'.join(parts[:2])} у вас нет")

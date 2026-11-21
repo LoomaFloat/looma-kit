@@ -1,7 +1,7 @@
 {
   "name": "looma",
   "displayName": "Looma",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Looma Float для ИИ-агентов: понять проект автора (сервис, движок, модель), предложить, что даст площадка, и провести весь путь. Перенос в сервис, свой движок на своих узлах без ревью, узлы, пробные вызовы, публикация. Skills looma, looma-port, looma-apps, looma-engine и MCP-сервер looma.",
   "author": {
     "name": "Looma Float",

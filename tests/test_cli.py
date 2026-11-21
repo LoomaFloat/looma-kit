@@ -667,3 +667,44 @@ def test_model_logs(api, capsys):
     code, out, err = run(capsys, "model", "logs", "parrot", "--tail", "50")
     assert code == 0, err
     assert "реплика 0000abcd, ранг 0 на home-1: failed" in out and "No module named" in out
+
+
+def test_engine_from_a_folder_to_review(api, capsys, tmp_path):
+    """Движок на ревью — папкой из рабочей среды, как сервис; GitHub по желанию."""
+    base, state = api
+    login(base, capsys)
+    state.handle = "anna"
+    folder = tmp_path / "solver"
+    (folder / "solver").mkdir(parents=True)
+    (folder / "looma-engine.yaml").write_text("name: echo\n")
+    (folder / "solver" / "serve.py").write_text("print('ok')\n")
+    code, _out, err = run(capsys, "engine", "submit", str(folder), "--repo",
+                          "https://github.com/anna/echo", "--commit", "c" * 40)
+    assert code == 1 and "вместе не нужно" in err
+    code, _out, err = run(capsys, "engine", "submit", "--commit", "c" * 40)
+    assert code == 1 and "нужны оба" in err
+    code, out, err = run(capsys, "engine", "submit", str(folder), "--origin",
+                         "https://example.com/anna/echo", "--fee", "call=0.2")
+    assert code == 0, err
+    assert "папка solver: 2 файлов" in out and "ждёт проверки площадки" in out
+    assert "версия 1: ждёт проверки, из папки abcdef0123456789" in out
+    sent = json.loads([c for c in state.calls if c[:2] == ("POST", "/api/layers")][-1][3])
+    assert "own" not in sent and sent["origin"] == "https://example.com/anna/echo"
+    assert sent["fee"] == {"price_call": 20} and "repo" not in sent
+    assert sorted(state.engine_archives[-1]) == ["engine/looma-engine.yaml",
+                                                 "engine/solver/serve.py"]
+
+
+def test_reading_the_code_of_an_engine(api, capsys):
+    """Код одобренного движка видит любой, кто вошёл: например, владелец узла."""
+    base, _state = api
+    login(base, capsys)
+    code, out, err = run(capsys, "engine", "code", "bob/solver")
+    assert code == 0, err
+    assert "bob/solver: версия 2" in out and "python -m solver.serve" in out
+    assert "ссылка автора https://example.com/bob/solver (площадка её не проверяет)" in out
+    assert "solver/serve.py (21 Б)" in out
+    code, out, _err = run(capsys, "engine", "code", "bob/solver", "--file", "solver/serve.py")
+    assert code == 0 and out == "print('решаю')\n"
+    code, _out, err = run(capsys, "engine", "code", "echo")
+    assert code == 1 and "автор/движок" in err
