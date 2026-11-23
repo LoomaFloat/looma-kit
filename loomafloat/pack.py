@@ -102,6 +102,19 @@ ENGINE_MANIFEST = "looma-engine.yaml"
 EXTENSION_MANIFEST = "looma-extension.yaml"
 #: Предел архива движка — как у площадки (`code_layers.MAX_UPLOAD`): только код.
 ENGINE_MAX_BYTES = 16 * 1024 * 1024
+#: Набор узлов ComfyUI (расширение движка `looma/comfyui`) крупнее: веб-файлы,
+#: шрифты, примеры (`code_layers.MAX_UPLOAD_COMFY`).
+COMFY_MAX_BYTES = 64 * 1024 * 1024
+_COMFY_EXTENDS = re.compile(r"^extends:\s*['\"]?(looma/)?comfyui['\"]?\s*(#.*)?$", re.M)
+
+
+def comfy_set(root: Path) -> bool:
+    """Папка набора узлов ComfyUI: `looma-extension.yaml` с `extends: comfyui`."""
+    try:
+        text = (root / EXTENSION_MANIFEST).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return bool(_COMFY_EXTENDS.search(text))
 
 
 def engine_kind(root: Path) -> str:
@@ -127,6 +140,7 @@ def pack_engine(root: Path) -> Tuple[bytes, str, List[str]]:
     root = root.resolve()
     kind = engine_kind(root)
     rules = patterns(root)
+    limit = COMFY_MAX_BYTES if kind == "extension" and comfy_set(root) else ENGINE_MAX_BYTES
     included = []
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
@@ -140,16 +154,16 @@ def pack_engine(root: Path) -> Tuple[bytes, str, List[str]]:
             with path.open("rb") as handle:
                 archive.addfile(info, handle)
             included.append(relative.as_posix())
-            if buffer.tell() > ENGINE_MAX_BYTES:
-                raise PackError(f"папка движка больше {ENGINE_MAX_BYTES // 2**20} МБ в архиве: "
+            if buffer.tell() > limit:
+                raise PackError(f"папка движка больше {limit // 2**20} МБ в архиве: "
                                 f"веса и данные движок скачивает сам, лишнее — в {IGNORE_FILE}")
     data = buffer.getvalue()
-    if len(data) > ENGINE_MAX_BYTES:
-        raise PackError(f"папка движка больше {ENGINE_MAX_BYTES // 2**20} МБ в архиве: "
+    if len(data) > limit:
+        raise PackError(f"папка движка больше {limit // 2**20} МБ в архиве: "
                         f"лишнее — в {IGNORE_FILE}")
     return data, kind, included
 
 
-__all__ = ["DEFAULT_IGNORE", "ENGINE_MANIFEST", "EXTENSION_MANIFEST", "MANIFEST", "MAX_BYTES",
-           "PackError", "engine_kind", "ignored", "manifest_name", "pack", "pack_engine",
+__all__ = ["COMFY_MAX_BYTES", "DEFAULT_IGNORE", "ENGINE_MANIFEST", "EXTENSION_MANIFEST", "MANIFEST", "MAX_BYTES",
+           "PackError", "comfy_set", "engine_kind", "ignored", "manifest_name", "pack", "pack_engine",
            "patterns"]

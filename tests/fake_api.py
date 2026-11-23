@@ -23,6 +23,10 @@ DEV_TOKEN = "looma_dev_test"
 DEV_MANIFEST = {"runtime": {"kind": "python", "python": "3.12"},
                 "processes": {"web": {"kind": "web", "cmd": "python app.py", "port": 8080}}}
 PNG = b"\x89PNG\r\n\x1a\nfake"
+#: Набор узлов ComfyUI площадки (расширение движка comfyui).
+COMFY_SET = {"ref": "looma-sets/kjnodes", "version": 2, "title": "KJNodes", "review": "reviewed",
+             "package": "comfyui_kjnodes", "nodes": ["ImageResizeKJv2", "GetImageSizeAndCount"],
+             "outputs": {}, "folders": [], "suffixes": []}
 MP4 = b"\x00\x00\x00\x18ftypmp42fake"
 
 
@@ -166,6 +170,10 @@ def make_handler(state: State):
                     return self._error(400, "preset есть только у настройки поверх модели")
                 entry.update({k: v for k, v in doc.items() if k in (
                     "price", "summary", "preset", "min_replicas", "max_replicas")})
+                if "graph" in doc:
+                    state.regraphs = getattr(state, "regraphs", []) + [doc]
+                    entry["recipe"] = {**entry["recipe"], "revision":
+                                       int(entry["recipe"].get("revision") or 0) + 1}
                 if "contours" in doc:
                     entry["passport"]["contours"] = doc["contours"] or ["platform", "open"]
             return self._send(200, entry)
@@ -333,9 +341,46 @@ def make_handler(state: State):
                 return self._entries(method, path, body)
             if path == "/api/layers" or path.startswith("/api/layers/"):
                 return self._layers(method, path, body)
+            if path == "/api/comfyui/extensions":
+                return self._send(200, {"extensions": [COMFY_SET]})
+            if path == "/api/comfyui/inspect":
+                graph = (json.loads(body) or {}).get("graph") or {}
+                if "nodes" in graph and "links" in graph:
+                    return self._error(400, "это граф в формате редактора; нужен API-формат")
+                unknown = sorted({n["class_type"] for n in graph.values()
+                                  if n["class_type"].startswith("Custom")})
+                used = sorted({n["class_type"] for n in graph.values()}
+                              & set(COMFY_SET["nodes"]))
+                sets = [{**COMFY_SET, "used": used}] if used else []
+                return self._send(200, {
+                    "comfyui": "0.46.0", "nodes": len(graph), "unknown": unknown,
+                    "extensions": sets,
+                    "outputs": [{"node": "9", "class_type": "SaveImage", "media": "image"}],
+                    "weights": [{"node": "4", "class_type": "CheckpointLoaderSimple",
+                                 "field": "ckpt_name", "name": "sdxl.safetensors",
+                                 "folder": "checkpoints", "folders": ["checkpoints"]}],
+                    "fields": [], "inputs": {"prompt": {"node": "6", "field": "text",
+                                                        "type": "text"}},
+                    "kind": "image",
+                    "draft": {"graph": "workflow_api.json", "output": {"node": "9"},
+                              **({"extensions": [COMFY_SET["ref"]]} if used else {}),
+                              "inputs": {"prompt": {"node": "6", "field": "text",
+                                                    "type": "text"}},
+                              "weights": [{"folder": "checkpoints", "repo": "",
+                                           "file": "sdxl.safetensors"}]},
+                    "problems": ["репозитории весов на HuggingFace называет автор"]
+                    + ([f"узлов {', '.join(unknown)} нет в ядре"] if unknown else [])})
             if path == "/api/models/check":
                 doc = json.loads(body)
                 state.model_checks = getattr(state, "model_checks", []) + [doc]
+                if doc.get("engine") == "comfyui":
+                    return self._send(200, {
+                        "engine": "comfyui", "flags": {"standard": True}, "fits": True,
+                        "stages": 1, "nodes_fit": 2, "error": "",
+                        "weights": {"gib": 6.5, "files": 1},
+                        "model": {"kind": "image", "comfyui": "0.46.0", "weights_gib": 6.5,
+                                  "vram_gib": 10.4, "weights": []},
+                        "recipe": {"engine": "comfyui", "kind": "image"}})
                 if "/" in doc.get("engine", ""):
                     return self._send(200, {"engine": doc["engine"], "model": {}, "flags": {},
                                             "fits": True, "stages": 1, "nodes_fit": 1,

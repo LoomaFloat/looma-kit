@@ -14,8 +14,10 @@
     looma engine try [папка]       свой движок на своих узлах, без ревью
     looma engine submit [папка]    версия движка из папки на ревью, для сети
     looma engine submit …          свой движок: версия из репозитория на ревью площадки
+    looma comfy inspect <граф>     граф ComfyUI как модель: узлы, наборы узлов, входы, веса
+    looma comfy sets               наборы узлов ComfyUI, доступные модели
     looma node connect             подключить свою машину с видеокартой
-    looma call <модель> …          пробный вызов модели: чат, изображение, свой API
+    looma call <модель> …          пробный вызов модели: чат, изображение, видео, свой API
     looma stats                    запросы, клиенты, события, себестоимость
     looma income                   доход: сервисы, модели, движки, узлы
 
@@ -266,6 +268,46 @@ def _model_lines(entry: dict) -> list:
     return lines
 
 
+def cmd_comfy(args) -> None:
+    looma = _looma(args)
+    if args.action == "sets":
+        try:
+            found = looma.comfy.extensions()
+        except LoomaError as exc:
+            raise Stop(str(exc)) from None
+        if args.json:
+            say(json.dumps(found, ensure_ascii=False, indent=2))
+            return
+        if not found:
+            say("наборов узлов пока нет: граф собирается из узлов ядра. Свой набор подают "
+                "расширением движка comfyui: `looma engine submit <папка> --extension`")
+            return
+        for item in found:
+            for line in ops.comfy_set_lines(item):
+                say(line)
+        return
+    if not args.graph:
+        raise Stop("нужен граф: `looma comfy inspect workflow_api.json`")
+    try:
+        graph = ops.read_graph(args.graph)
+        report = looma.comfy.inspect(graph)
+    except (ops.OpError, LoomaError) as exc:
+        raise Stop(str(exc)) from None
+    if args.json:
+        say(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        for line in ops.inspect_lines(report):
+            say(line)
+    if args.write:
+        target = Path(args.write)
+        if target.exists():
+            raise Stop(f"{target} уже есть: черновик не перезаписывает файл")
+        graph_file = os.path.relpath(Path(args.graph).resolve(), target.resolve().parent)
+        target.write_text(ops.comfy_yaml(report, graph_file), encoding="utf-8")
+        say(f"черновик описания: {target}. Допишите repo у весов, проверьте входы и выход, "
+            f"затем `looma model check --from {target}`")
+
+
 def cmd_engine(args) -> None:
     looma = _looma(args)
     action, name = args.action, args.name
@@ -401,9 +443,22 @@ def cmd_model(args) -> None:
                 say("адаптеров нет: адаптер появляется после обучения или загружается файлами")
             for a in rows:
                 say(f"{a['name']:<24} обучен на {a['base_model']}")
+        elif action == "check" and args.from_:
+            found = looma.entries.check({**ops.recipe_of(args.set), **ops.read_comfy(args.from_)})
+            model = found.get("model") or {}
+            say(f"граф проходит: ComfyUI {model.get('comfyui')}, род {model.get('kind')} "
+                f"({ops.COMFY_KINDS.get(model.get('kind'), '')}), весов "
+                f"{model.get('weights_gib', 0)} ГиБ, на карту {model.get('vram_gib')} ГиБ")
+            for note in model.get("notes") or []:
+                say(f"  {note}")
+            if found.get("fits"):
+                say("модель встанет в сети: целиком на одной карте")
+            else:
+                say(f"сейчас модель поставить некуда: {found.get('error')}")
         elif action == "check":
             if not args.repo and "/" not in (args.engine or ""):
-                raise Stop("что проверить? looma model check --repo владелец/модель")
+                raise Stop("что проверить? looma model check --repo владелец/модель или "
+                           "--from описание.comfy.yaml")
             found = looma.entries.check({**({"repo": args.repo} if args.repo else {}),
                                          **({"engine": args.engine} if args.engine else {}),
                                          **ops.recipe_of(args.set)})
@@ -423,7 +478,8 @@ def cmd_model(args) -> None:
                 name=name or "", repo=args.repo or "", engine=args.engine or "",
                 recipe=ops.recipe_of(args.set), base=args.base or "", adapter=args.adapter or "",
                 preset=preset, summary=args.summary or "", always=args.always, own=args.own,
-                node=args.node or "")
+                node=args.node or "",
+                comfy=ops.read_comfy(args.from_) if args.from_ else None)
             made = ops.add_entry(looma, payload)
             for line in _model_lines(made):
                 say(line)
@@ -471,6 +527,10 @@ def cmd_model(args) -> None:
                     changes["engine_version"] = version if version == "latest" else int(version)
                 if args.node is not None:
                     changes["own_node"] = args.node      # пустая строка убирает выбор
+                if args.from_:
+                    # Граф ComfyUI и его описание: новая ревизия, реплики заменяются по одной.
+                    comfy = ops.read_comfy(args.from_)
+                    changes.update(description=comfy["description"], graph=comfy["graph"])
                 if args.set and action == "set":
                     # Поля движка: меняются вместе с версией или сами по себе;
                     # `имя=` убирает поле.
@@ -478,7 +538,7 @@ def cmd_model(args) -> None:
                                          for key, value in ops.recipe_of(args.set).items()}
                 if not changes:
                     raise Stop("что поменять? --summary, --price, --free, --preset, --always, "
-                               "--sleep, --own, --network, --node или --engine-version")
+                               "--sleep, --own, --network, --node, --engine-version или --from")
                 entry = looma.entries.update(entry["id"], changes)
             elif action == "publish":
                 entry = looma.entries.publish(entry["id"])
@@ -590,6 +650,15 @@ def cmd_call(args) -> None:
         Path(out).write_bytes(pngs[0])
         say(f"изображение: {out}")
         return
+    if args.video is not None:
+        say("задание на видео поставлено; спящая модель сначала поднимается, это минуты")
+        job = looma.video(model, args.video, wait=True)
+        data = job.content()
+        out = args.out or "video" + _video_suffix(data)
+        Path(out).write_bytes(data)
+        seconds = job.doc.get("seconds")
+        say(f"видео: {out}" + (f", {seconds} с" if seconds else ""))
+        return
     if args.path is not None or args.data is not None or args.data_file or args.wait_not:
         headers = dict(item.split(":", 1) for item in args.header or [] if ":" in item)
         headers = {k.strip(): v.strip() for k, v in headers.items()}
@@ -609,6 +678,17 @@ def cmd_call(args) -> None:
         sys.stdout.write(piece)
         sys.stdout.flush()
     say("")
+
+
+def _video_suffix(data: bytes) -> str:
+    """Расширение файла видео по его началу: модели отдают MP4, WebM или GIF."""
+    if data[:4] == b"GIF8":
+        return ".gif"
+    if data[:4] == b"\x1aE\xdf\xa3":
+        return ".webm"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return ".mp4"
 
 
 def cmd_job(args) -> None:
@@ -1034,6 +1114,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--engine-version", metavar="номер",
                    help="set: перевести модель на другую версию движка автора (номер или "
                         "latest); имя, цена и публикация остаются, реплики заменяются сами")
+    p.add_argument("--from", dest="from_", metavar="описание.comfy.yaml",
+                   help="add, check, set: граф ComfyUI как модель: описание (graph, output, "
+                        "inputs, weights; черновик даёт `looma comfy inspect --write`)")
     p.add_argument("--base", help="add: модель каталога, поверх которой заводится запись")
     p.add_argument("--adapter", help="add: адаптер LoRA (с --base): имя или номер")
     p.add_argument("--preset", metavar="файл.json",
@@ -1056,6 +1139,16 @@ def parser() -> argparse.ArgumentParser:
                    help="set: разрешить модели вставать и на узлы сети")
     p.add_argument("--yes", action="store_true", help="delete: подтвердить удаление")
     p.add_argument("--tail", type=int, default=200, help="logs: сколько строк")
+
+    p = command("comfy", cmd_comfy, "граф ComfyUI как модель: разбор графа и черновик описания")
+    p.add_argument("action", choices=("inspect", "sets"),
+                   help="inspect — какие узлы, выход, веса и входы у графа, какие наборы узлов "
+                        "он берёт, что поправить; sets — наборы узлов, доступные модели")
+    p.add_argument("graph", nargs="?",
+                   help="inspect: граф в API-формате (в ComfyUI: Workflow → Export (API))")
+    p.add_argument("--write", metavar="файл.comfy.yaml",
+                   help="записать черновик описания модели (не перезаписывает файл)")
+    p.add_argument("--json", action="store_true", help="разбор целиком, JSON")
 
     p = command("engine", cmd_engine, "свои движки и расширения: на свои узлы без ревью, на "
                                       "ревью для сети, открыть авторам")
@@ -1101,6 +1194,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("model", help="модель: имя из `looma models` или автор/модель")
     p.add_argument("text", nargs="?", help="чат: сообщение")
     p.add_argument("--image", metavar="описание", help="изображение по описанию")
+    p.add_argument("--video", metavar="описание",
+                   help="видео по описанию: задание, ждёт готовности и сохраняет файл")
     p.add_argument("--from", dest="source", action="append", metavar="файл",
                    help="с --image: исходное изображение для правки, можно несколько раз")
     p.add_argument("--path", help="свой API: путь у службы, например /tasks?fast=1")

@@ -210,6 +210,7 @@ class Looma:
         self.entries = Entries(self)
         self.engines = Engines(self)
         self.nodes = Nodes(self)
+        self.comfy = Comfy(self)
 
     def for_client(self, client: Optional[str]) -> "Looma":
         """Те же ключ и адрес, вызовы моделей — для клиента `client`."""
@@ -626,6 +627,28 @@ class Entries:
     def adapters(self) -> List[dict]:
         """Адаптеры LoRA проекта: из обучения и загруженные."""
         return get_json(self.looma.url("/v1/adapters"), key=self.looma.key)["data"]
+
+
+class Comfy:
+    """Граф ComfyUI как модель каталога (движок площадки `comfyui`)."""
+
+    def __init__(self, looma: Looma) -> None:
+        self.looma = looma
+
+    def inspect(self, graph: dict) -> dict:
+        """Разбор графа без запуска: узлы ядра, узлы наборов площадки и узлы,
+        которых нет нигде; выход, файлы весов, поля, похожие на входы,
+        черновик описания модели (с `extensions`, если граф пользуется
+        наборами)."""
+        return send_json("POST", self.looma.url("/api/comfyui/inspect"), {"graph": graph},
+                         key=self.looma.key)
+
+    def extensions(self) -> list:
+        """Наборы узлов, которые можно назвать в модели: одобренные расширения
+        движка `looma/comfyui` (свои и открытые) с узлами, загрузчиками и
+        папками весов."""
+        return (get_json(self.looma.url("/api/comfyui/extensions"), key=self.looma.key)
+                or {}).get("extensions") or []
 
 
 class Engines:

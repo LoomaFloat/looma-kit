@@ -404,7 +404,7 @@ def test_preset_over_a_catalog_model(api, capsys, tmp_path):
     path.write_text(json.dumps(preset, ensure_ascii=False), encoding="utf-8")
 
     code, _out, err = run(capsys, "model", "add", "translate", "--base", "chat-model")
-    assert code == 1 and "Одно из трёх" in err
+    assert code == 1 and "Одно из четырёх" in err
     code, _out, err = run(capsys, "model", "add", "translate", "--base", "chat-model",
                           "--preset", str(path), "--always")
     assert code == 1 and "нет своих реплик" in err
@@ -708,3 +708,107 @@ def test_reading_the_code_of_an_engine(api, capsys):
     assert code == 0 and out == "print('решаю')\n"
     code, _out, err = run(capsys, "engine", "code", "echo")
     assert code == 1 and "автор/движок" in err
+
+
+GRAPH = {"4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "sdxl.safetensors"}},
+         "6": {"class_type": "CLIPTextEncode", "inputs": {"text": "кот", "clip": ["4", 1]}},
+         "9": {"class_type": "SaveImage", "inputs": {"images": ["6", 0]}}}
+
+
+def test_comfyui_graph_from_inspect_to_a_model(api, capsys, tmp_path):
+    base, state = api
+    login(base, capsys)
+    run(capsys, "model", "name", "anna")
+    graph = tmp_path / "workflow_api.json"
+    graph.write_text(json.dumps(GRAPH), encoding="utf-8")
+    described = tmp_path / "portrait.comfy.yaml"
+    code, out, err = run(capsys, "comfy", "inspect", str(graph), "--write", str(described))
+    assert code == 0, err
+    assert "выход: узел 9 (SaveImage, изображение)" in out
+    assert "вес: checkpoints/sdxl.safetensors" in out and "род модели: image" in out
+    text = described.read_text(encoding="utf-8")
+    assert 'graph: "workflow_api.json"' in text and 'output: {node: "9"}' in text
+    assert '  prompt: {node: "6", field: "text", type: "text"}' in text
+    assert '  - {folder: "checkpoints", repo: "", file: "sdxl.safetensors"}' in text
+    code, _out, err = run(capsys, "comfy", "inspect", str(graph), "--write", str(described))
+    assert code == 1 and "не перезаписывает" in err
+
+    code, out, err = run(capsys, "model", "check", "--from", str(described))
+    assert code == 0, err
+    assert "граф проходит: ComfyUI 0.46.0, род image" in out and "встанет в сети" in out
+    sent = state.model_checks[-1]
+    assert sent["engine"] == "comfyui" and sent["graph"] == GRAPH
+    assert sent["description"] == text
+
+    code, out, err = run(capsys, "model", "add", "portrait", "--from", str(described))
+    assert code == 0, err
+    made = state.entries[-1]
+    assert made["label"] == "anna/portrait" and made["recipe"]["graph"] == GRAPH
+    assert made["recipe"]["engine"] == "comfyui" and "description" in made["recipe"]
+    code, _out, err = run(capsys, "model", "add", "x", "--from", str(described),
+                          "--repo", "anna/w")
+    assert code == 1 and "описание графа" in err
+
+    changed = {**GRAPH, "6": {**GRAPH["6"], "inputs": {**GRAPH["6"]["inputs"], "text": "пёс"}}}
+    graph.write_text(json.dumps(changed), encoding="utf-8")
+    code, out, err = run(capsys, "model", "set", "portrait", "--from", str(described))
+    assert code == 0, err
+    assert state.regraphs[-1]["graph"] == changed and made["recipe"]["revision"] == 1
+
+    editor = tmp_path / "editor.json"
+    editor.write_text(json.dumps({"nodes": [], "links": []}), encoding="utf-8")
+    code, _out, err = run(capsys, "comfy", "inspect", str(editor))
+    assert code == 1 and "Export (API)" in err
+    lost = tmp_path / "lost.comfy.yaml"
+    lost.write_text("output: {node: 9}\n", encoding="utf-8")
+    code, _out, err = run(capsys, "model", "add", "lost", "--from", str(lost))
+    assert code == 1 and "нет строки graph" in err
+
+
+def test_comfyui_node_sets(api, capsys, tmp_path):
+    base, _state = api
+    login(base, capsys)
+    code, out, err = run(capsys, "comfy", "sets")
+    assert code == 0, err
+    assert "looma-sets/kjnodes, версия 2: KJNodes" in out and "узлов 2" in out
+    graph = tmp_path / "workflow_api.json"
+    graph.write_text(json.dumps({**GRAPH, "11": {"class_type": "ImageResizeKJv2",
+                                                 "inputs": {"image": ["8", 0]}}}),
+                     encoding="utf-8")
+    described = tmp_path / "kj.comfy.yaml"
+    code, out, err = run(capsys, "comfy", "inspect", str(graph), "--write", str(described))
+    assert code == 0, err
+    assert "набор узлов: looma-sets/kjnodes, версия 2 (узлы графа: ImageResizeKJv2)" in out
+    assert 'extensions: ["looma-sets/kjnodes"]' in described.read_text(encoding="utf-8")
+    code, _out, err = run(capsys, "comfy", "inspect")
+    assert code == 1 and "нужен граф" in err
+
+
+def test_node_set_folder_may_be_bigger_than_an_engine(tmp_path, monkeypatch):
+    from loomafloat import pack as packing
+
+    folder = tmp_path / "kjnodes"
+    (folder / "comfyui_kjnodes").mkdir(parents=True)
+    (folder / "comfyui_kjnodes" / "__init__.py").write_text("NODE_CLASS_MAPPINGS = {}\n")
+    (folder / "comfyui_kjnodes" / "font.ttf").write_bytes(__import__("os").urandom(4096))
+    (folder / "looma-extension.yaml").write_text(
+        "name: kjnodes\ntitle: KJNodes\nextends: comfyui  # набор узлов\npackage: comfyui_kjnodes\n"
+        "comfyui:\n  nodes: [A]\n", encoding="utf-8")
+    monkeypatch.setattr(packing, "ENGINE_MAX_BYTES", 1024)
+    data, kind, files = packing.pack_engine(folder)
+    assert kind == "extension" and len(data) > 1024, "у набора узлов предел 64 МБ"
+    (folder / "looma-extension.yaml").write_text(
+        "name: upper\ntitle: Заглавные\nextends: anna/echo\npackage: comfyui_kjnodes\n",
+        encoding="utf-8")
+    with pytest.raises(PackError, match="больше 0 МБ"):
+        packing.pack_engine(folder)
+
+
+def test_call_video_waits_and_saves(api, capsys, tmp_path):
+    base, state = api
+    login(base, capsys)
+    out = tmp_path / "clip.mp4"
+    code, text, err = run(capsys, "call", "anna/gifs", "--video", "кот бежит", "--out", str(out))
+    assert code == 0, err
+    assert f"видео: {out}" in text and out.read_bytes()
+    assert state.videos[-1][0]["model"] == "anna/gifs" and state.videos[-1][0]["prompt"] == "кот бежит"

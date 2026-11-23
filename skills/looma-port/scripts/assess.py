@@ -375,6 +375,25 @@ RULES: List[Rule] = [
          py=("openai-whisper", "whisper", "faster-whisper", "faster_whisper", "whisperx", "tts",
              "coqui-tts", "bark", "nemo-toolkit", "vosk", "silero", "pyannote-audio",
              "pyannote")),
+    Rule("comfyui", "change", "Граф ComfyUI или его сервер",
+         "Граф становится своей моделью на движке площадки `comfyui` без своего кода: "
+         "`looma comfy inspect граф.json --write имя.comfy.yaml`, затем "
+         "`looma model add имя --from имя.comfy.yaml`. Наборы узлов (custom nodes) "
+         "подключаются расширениями движка: одобренные видны в `looma comfy sets`, свой "
+         "набор подают на ревью; если набор ревью не пройдёт, модель каталога, свои веса на "
+         "`diffusion`, обёртка на своём узле или движок-образ. Граф в формате редактора не "
+         "исполняется, нужен API-формат. Разбор: skill `looma`, «Граф ComfyUI».",
+         "references/models.md",
+         py=("comfy-cli", "comfyui-frontend-package", "comfyui_frontend_package",
+             "comfyui-workflow-templates"),
+         # Граф: одно место на файл (`\A`), иначе узлы одного графа займут весь список.
+         code=(r"(?s)\A.*?\"class_type\"\s*:\s*\"\w",
+               r"(?s)\A.*?\"type\"\s*:\s*\"(?:KSampler|CheckpointLoaderSimple|CLIPTextEncode|"
+               r"UNETLoader)\"",
+               r"\bNODE_CLASS_MAPPINGS\b",
+               r"\bcomfy(?:ui)?\b|\bcomfy_\w+|[:/]8188\b"),
+         code_in=(".json", ".py", ".js", ".mjs", ".ts"),
+         images=("comfyui", "yanwk/comfyui")),
     Rule("external-llm-api", "change", "Внешний API моделей (OpenAI, Anthropic, Google и др.)",
          "Перевести на модели сети Looma Float: ради них сервис и переносят. Чат, изображения, "
          "видео, эмбеддинги и ре-ранк есть в каталоге (`looma models`); адрес OpenAI-совместимый "
@@ -839,7 +858,7 @@ def entrypoint(project: Project, info: dict) -> str:
         if "manage.py" in texts:
             settings = re.search(r"['\"]([\w.]+)\.settings['\"]", texts["manage.py"])
             module = settings.group(1) if settings else "project"
-            return f"gunicorn {module}.wsgi -b 0.0.0.0:$PORT"
+            return f"gunicorn {module}.wsgi -b 0.0.0.0:$PORT --timeout 300"
         for path, text in sorted(texts.items()):
             if not path.endswith(".py") or auxiliary(path):
                 continue
@@ -849,7 +868,7 @@ def entrypoint(project: Project, info: dict) -> str:
                 return f"uvicorn {module}:{var} --host 0.0.0.0 --port $PORT"
             if re.search(r"=\s*Flask\(", text):
                 var = re.search(r"(\w+)\s*=\s*Flask\(", text).group(1)
-                return f"gunicorn {module}:{var} -b 0.0.0.0:$PORT"
+                return f"gunicorn {module}:{var} -b 0.0.0.0:$PORT --timeout 300"
         if "streamlit" in project.py_deps:
             return "streamlit run app.py --server.port $PORT --server.address 0.0.0.0"
         for name in ("app.py", "main.py", "server.py", "run.py"):
@@ -859,7 +878,7 @@ def entrypoint(project: Project, info: dict) -> str:
 
 
 #: Находки, по которым видно, что проект считает на видеокарте сам.
-GPU_FINDINGS = {"local-llm-server", "cuda", "heavy-ml", "speech", "weights"}
+GPU_FINDINGS = {"local-llm-server", "cuda", "heavy-ml", "speech", "weights", "comfyui"}
 #: Боты: принимают сообщения сами, это тоже сервис.
 BOTS_PY = ("python-telegram-bot", "aiogram", "pytelegrambotapi", "telebot", "discord.py",
            "discord", "vk-api", "vk_api", "slack-bolt", "slack_bolt")
@@ -876,7 +895,15 @@ def shape_of(project: Project, info: dict, findings: List[Finding]) -> dict:
               for name in BOTS_PY) or any(name in project.node_deps for name in BOTS_NODE)
     web = bool(info["frameworks"]) or "listen" in ids or bool(scripts.get("start")) or bot
     gpu = bool(ids & GPU_FINDINGS)
-    if web and gpu:
+    comfy = "comfyui" in ids and not (ids & (GPU_FINDINGS - {"comfyui"}))
+    if web and gpu and comfy:
+        code, text = "both", ("Веб-сервис и граф ComfyUI: веб становится сервисом (looma.yaml), "
+                              "граф своей моделью на движке comfyui, если его узлы из ядра "
+                              "(looma comfy inspect); иначе модель каталога или движок")
+    elif gpu and comfy:
+        code, text = "engine", ("Граф ComfyUI: своя модель на движке comfyui, если его узлы из "
+                                "ядра (looma comfy inspect); иначе модель каталога или движок")
+    elif web and gpu:
         code, text = "both", ("Веб-сервис и вычисления на видеокарте в одном проекте: веб "
                               "становится сервисом (looma.yaml), вычисление — моделью каталога "
                               "или своим движком (looma-engine.yaml). Предложить разделить")

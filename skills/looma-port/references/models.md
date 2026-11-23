@@ -106,7 +106,7 @@ mp4 = looma.video("MiniMax-H3", "A red fox in a snowy forest", wait=True).conten
 |---|---|
 | Ollama, vLLM, llama.cpp, LocalAI, TGI | текстовая модель сети через OpenAI-совместимый API; свой сервер модели и его контейнер в docker-compose уберите |
 | `transformers` для генерации текста | текстовая модель сети |
-| `diffusers`, Stable Diffusion WebUI, ComfyUI | модель изображений: генерация и правка по изображению |
+| `diffusers`, Stable Diffusion WebUI, ComfyUI | модель изображений: генерация и правка по изображению. Свой граф ComfyUI, который модель каталога не заменит: skill `looma`, «Граф ComfyUI» |
 | `sentence-transformers`, `FlagEmbedding`, `fastembed` | `POST /v1/embeddings` моделью типа `embedding`; длину вектора показывает `looma models` (`dimensions`) |
 | cross-encoder для ре-ранка | `POST /v1/rerank` моделью типа `rerank` |
 | Whisper, TTS, распознавание изображений своими моделями | модель нужного типа, если она есть в `looma models`; иначе свой движок со своим API (skill `looma-engine`) или внешний API по HTTPS с ключом в секрете |

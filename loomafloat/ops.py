@@ -375,18 +375,28 @@ def read_preset(path: Path) -> dict:
 def entry_payload(*, name: str, repo: str = "", engine: str = "", recipe: Optional[dict] = None,
                   base: str = "", adapter: str = "", preset: Optional[dict] = None,
                   summary: str = "", always: bool = False, own: bool = False,
-                  node: str = "") -> dict:
-    """Тело запроса на новую запись: одно из трёх — свои веса (`repo`), модель
-    каталога с адаптером (`base` и `adapter`), настройка (`base` и `preset`)."""
+                  node: str = "", comfy: Optional[dict] = None) -> dict:
+    """Тело запроса на новую запись: одно из четырёх — свои веса (`repo`), модель
+    каталога с адаптером (`base` и `adapter`), настройка (`base` и `preset`),
+    граф ComfyUI (`comfy`: описание и граф из `read_comfy`)."""
     if not name:
         raise EntryError("как назвать модель? Имя: латиница, цифры, точка, дефис")
+    if comfy is not None:
+        if repo or base or adapter or preset is not None or node or engine not in ("", "comfyui"):
+            raise EntryError("модель на ComfyUI задаёт описание графа (--from файл.comfy.yaml): "
+                             "repo, base, adapter, preset и свой движок с ним не нужны")
+        payload = {"name": name, **({"summary": summary} if summary else {}),
+                   "min_replicas": 1 if always else 0, "max_replicas": 1,
+                   **({"contours": ["own"]} if own else {}), **(recipe or {}), **comfy}
+        return payload
     # Движок автора (`автор/движок`) может работать и без весов.
     authored = "/" in engine and not base
     chosen = [bool(repo) or authored, bool(base and adapter),
               bool(base and preset is not None)]
     if sum(chosen) != 1 or (base and repo):
-        raise EntryError("что добавить? Одно из трёх: --repo владелец/модель (свои веса), "
-                         "--base модель --adapter адаптер, --base модель --preset файл.json")
+        raise EntryError("что добавить? Одно из четырёх: --repo владелец/модель (свои веса), "
+                         "--base модель --adapter адаптер, --base модель --preset файл.json, "
+                         "--from описание.comfy.yaml (граф ComfyUI)")
     payload = {"name": name}
     if summary:
         payload["summary"] = summary
@@ -406,6 +416,127 @@ def entry_payload(*, name: str, repo: str = "", engine: str = "", recipe: Option
         return {**payload, "base": base, "adapter": adapter}
     return {**payload, **(recipe or {}), **({"repo": repo} if repo else {}),
             **({"engine": engine} if engine else {})}
+
+
+# --------------------------------------------------------------- ComfyUI
+COMFY_GRAPH_LINE = re.compile(r"^graph:[ \t]*(?P<path>[^#\n]*?)[ \t]*(?:#.*)?$", re.M)
+MAX_GRAPH_BYTES = 1024 * 1024
+COMFY_KINDS = {"image": "изображения: общий запрос /v1/images, витрина и чат",
+               "video": "видео: общий запрос /v1/videos",
+               "api": "своё API: /v1/run/<модель> и задания"}
+
+
+def read_graph(path) -> dict:
+    """Граф ComfyUI из файла: API-формат («Export (API)»), JSON-объект."""
+    path = Path(path)
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise EntryError(f"граф {path} не прочитать: {exc.strerror or exc}") from None
+    if len(raw) > MAX_GRAPH_BYTES:
+        raise EntryError(f"граф {path.name} больше {MAX_GRAPH_BYTES // 1024} КБ")
+    try:
+        graph = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        raise EntryError(f"граф {path.name} не JSON") from None
+    if isinstance(graph, dict) and "nodes" in graph and "links" in graph:
+        raise EntryError(f"{path.name} — граф в формате редактора; нужен API-формат: в ComfyUI "
+                         "меню Workflow → Export (API)")
+    if not isinstance(graph, dict) or not graph:
+        raise EntryError(f"{path.name}: граф в API-формате — JSON-объект узлов")
+    return graph
+
+
+def read_comfy(path) -> dict:
+    """Описание модели на ComfyUI (`*.comfy.yaml`) и граф, на который оно
+    ссылается: `{"engine": "comfyui", "description": текст, "graph": граф}`.
+    Описание разбирает площадка; здесь из него берётся только путь к графу."""
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise EntryError(f"описание {path} не прочитать: {exc.strerror or exc}") from None
+    found = COMFY_GRAPH_LINE.search(text)
+    if not found or not found.group("path").strip().strip("\"'"):
+        raise EntryError(f"в {path.name} нет строки graph: путь к графу в API-формате, "
+                         "например graph: workflow_api.json")
+    graph = read_graph(path.parent / found.group("path").strip().strip("\"'"))
+    return {"engine": "comfyui", "description": text, "graph": graph}
+
+
+def _flow(value) -> str:
+    """Значение описания в строку YAML: словарь и список — в одну строку, строки —
+    в кавычках JSON (их YAML читает так же)."""
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{k}: {_flow(v)}" for k, v in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_flow(v) for v in value) + "]"
+    return json.dumps(value, ensure_ascii=False)
+
+
+def comfy_yaml(report: dict, graph_file: str) -> str:
+    """Черновик описания модели из разбора графа (`looma comfy inspect --write`)."""
+    draft = report.get("draft") or {}
+    lines = ["# Описание модели на ComfyUI для Looma Float (looma comfy inspect).",
+             "# Проверьте выход и входы; у каждого веса назовите repo: открытый репозиторий",
+             "# HuggingFace, файл в safetensors. Добавить: looma model add <имя> --from <этот файл>",
+             f"graph: {_flow(graph_file)}"]
+    if draft.get("extensions"):
+        lines.append("# наборы узлов площадки, которыми граф пользуется")
+        lines.append(f"extensions: {_flow(draft['extensions'])}")
+    if draft.get("output"):
+        lines.append(f"output: {_flow(draft['output'])}")
+    else:
+        lines.append("# output: {node: \"…\"}  — узел сохранения результата")
+    inputs = draft.get("inputs") or {}
+    lines.append("inputs:" if inputs else "inputs: {}")
+    for name, about in inputs.items():
+        lines.append(f"  {name}: {_flow(about)}")
+    weights = draft.get("weights") or []
+    lines.append("weights:" if weights else "weights: []")
+    for item in weights:
+        lines.append(f"  - {_flow(item)}")
+    return "\n".join(lines) + "\n"
+
+
+def comfy_set_lines(item: dict) -> list:
+    """Набор узлов ComfyUI строками (`looma comfy sets`)."""
+    lines = [f"{item['ref']}, версия {item.get('version')}: {item.get('title') or ''}".rstrip(": "),
+             f"  узлов {len(item.get('nodes') or [])}"
+             + (f"; сохраняют результат: {', '.join(f'{n} ({m})' for n, m in item['outputs'].items())}"
+                if item.get("outputs") else "")]
+    if item.get("folders"):
+        lines.append(f"  свои папки весов: {', '.join(item['folders'])}")
+    if item.get("suffixes"):
+        lines.append(f"  ещё читает веса: {', '.join(item['suffixes'])}")
+    if item.get("review") == "own":
+        lines.append("  ваша версия без ревью: модель с ней встанет только на ваши узлы")
+    return lines
+
+
+def inspect_lines(report: dict) -> list:
+    """Разбор графа строками для человека."""
+    lines = [f"ComfyUI {report.get('comfyui')}: узлов в графе {report.get('nodes')}"]
+    for item in report.get("extensions") or []:
+        lines.append(f"набор узлов: {item['ref']}, версия {item.get('version')} "
+                     f"(узлы графа: {', '.join(item.get('used') or [])})")
+    if report.get("unknown"):
+        lines.append(f"узлов нет ни в ядре, ни в наборах площадки: "
+                     f"{', '.join(report['unknown'])}")
+    for out in report.get("outputs") or []:
+        media = {"image": "изображение", "video": "видео"}.get(out.get("media"), "не результат")
+        lines.append(f"выход: узел {out['node']} ({out['class_type']}, {media})")
+    for item in report.get("weights") or []:
+        lines.append(f"вес: {item['folder']}/{item['name']} (узел {item['node']} "
+                     f"{item['class_type']}, поле {item['field']})")
+    for name, about in (report.get("inputs") or {}).items():
+        where = about.get("field") or "/".join(about.get("fields") or [])
+        lines.append(f"вход {name}: узел {about['node']}, поле {where} ({about['type']})")
+    kind = report.get("kind") or "api"
+    lines.append(f"род модели: {kind}, {COMFY_KINDS.get(kind, '')}")
+    for problem in report.get("problems") or []:
+        lines.append(f"поправить: {problem}")
+    return lines
 
 
 # --------------------------------------------------------------- движки

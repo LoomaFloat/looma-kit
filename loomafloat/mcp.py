@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -113,23 +114,33 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "looma_model_check",
      "description": "Проверить веса с HuggingFace без запуска: формат safetensors, размер, нет "
-                    "ли своего кода модели, встанет ли модель в сети сейчас. С движком автора "
+                    "ли своего кода модели, встанет ли модель в сети сейчас. С comfy (описание "
+                    "графа ComfyUI) — граф, входы, выход, веса, память и род модели. С движком автора "
                     "(engine вида автор/движок) repo нужен, только если движок работает с "
                     "весами: тогда проверяется, есть ли узлы, на которых движок встанет.",
      "inputSchema": {"type": "object", "properties": {
          "repo": {"type": "string", "description": "репозиторий: владелец/модель"},
          "engine": {"type": "string", "description": "движок; по умолчанию torch"},
+         "comfy": {"type": "string", "description": "граф ComfyUI как модель: путь к "
+                                                    "описанию *.comfy.yaml (graph, output, "
+                                                    "inputs, weights); черновик даёт "
+                                                    "looma_comfy_inspect"},
          "recipe": {"type": "object", "description": "параметры движка, если нужны"}}}},
     {"name": "looma_model_add",
-     "description": "Добавить свою модель в каталог. Одно из трёх: repo (свои веса на движке "
+     "description": "Добавить свою модель в каталог. Одно из четырёх: repo (свои веса на движке "
                     "площадки, свои реплики); base и adapter (модель каталога с адаптером LoRA, "
                     "свои реплики); base и preset (настройка поверх модели каталога без своих "
                     "реплик: system, template, inputs, params у текста; prompt, inputs, params "
-                    "у изображений и видео). Сначала модель видит только автор. handle нужен "
-                    "один раз, если имя автора ещё не задано.",
+                    "у изображений и видео); comfy (граф ComfyUI: описание *.comfy.yaml, свои "
+                    "реплики на движке comfyui; наборы узлов называет его поле extensions). Сначала модель видит только "
+                    "автор. handle нужен один раз, если имя автора ещё не задано.",
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string", "description": "имя модели: латиница, цифры, точка, дефис"},
          "repo": {"type": "string"}, "engine": {"type": "string"},
+         "comfy": {"type": "string", "description": "граф ComfyUI как модель: путь к "
+                                                    "описанию *.comfy.yaml (graph, output, "
+                                                    "inputs, weights); черновик даёт "
+                                                    "looma_comfy_inspect"},
          "recipe": {"type": "object", "description": "параметры движка"},
          "base": {"type": "string", "description": "модель каталога из looma_models"},
          "adapter": {"type": "string", "description": "адаптер LoRA: имя или номер"},
@@ -275,8 +286,30 @@ TOOLS = [
          "fields": {"type": "object", "description": "поля движка: имя и значение; null "
                                                      "убирает поле"},
          "node": {"type": "string", "description": "свой узел для модели на движке автора; "
-                                                   "пустая строка убирает выбор"}},
+                                                   "пустая строка убирает выбор"},
+         "comfy": {"type": "string", "description": "новая ревизия графа ComfyUI: путь к "
+                                                    "описанию *.comfy.yaml (graph, output, "
+                                                    "inputs, weights); черновик даёт "
+                                                    "looma_comfy_inspect"}},
          "required": ["name"]}},
+    {"name": "looma_comfy_sets",
+     "description": "Наборы узлов ComfyUI, которые модель может назвать в extensions: одобренные "
+                    "расширения движка comfyui (свои и открытые) с узлами, папками весов и "
+                    "форматами весов. Если узла нет ни в ядре, ни в наборах, набор подают на ревью "
+                    "расширением (looma-extension.yaml с extends: comfyui).",
+     "inputSchema": {"type": "object", "properties": {}}},
+    {"name": "looma_comfy_inspect",
+     "description": "Разобрать граф ComfyUI без запуска: какие узлы из ядра, какие дают наборы "
+                    "узлов площадки (их ставит в extensions черновика), каких нет нигде; "
+                    "узел-выход, файлы весов из загрузчиков, поля, похожие на входы модели, род "
+                    "модели и что поправить. С write — записать черновик описания *.comfy.yaml "
+                    "(repo у весов дописывает автор).",
+     "inputSchema": {"type": "object", "properties": {
+         "graph": {"type": "string", "description": "путь к графу в API-формате "
+                                                    "(Workflow → Export (API))"},
+         "write": {"type": "string", "description": "куда записать черновик описания; файл "
+                                                    "не перезаписывается"}},
+         "required": ["graph"]}},
     {"name": "looma_model_logs",
      "description": "Хвост лога реплик своей модели (свежие три запуска): почему движок не "
                     "встал, упал или отвечает ошибкой. Состояние и ошибка задачи, текст вывода "
@@ -498,9 +531,13 @@ class Server:
                 "models": [ops.entry_row(e) for e in doc["services"]]}
 
     def looma_model_check(self, repo: str = "", engine: str = "",
-                          recipe: Optional[dict] = None):
+                          recipe: Optional[dict] = None, comfy: str = ""):
+        if comfy:
+            found = self.looma.entries.check({**(recipe or {}), **ops.read_comfy(comfy)})
+            return {k: found.get(k) for k in ("engine", "model", "weights", "fits", "nodes_fit",
+                                              "error", "recipe")}
         if not repo and "/" not in engine:
-            raise ops.OpError("что проверить? repo: владелец/модель")
+            raise ops.OpError("что проверить? repo: владелец/модель или comfy: описание графа")
         found = self.looma.entries.check({**(recipe or {}), **({"repo": repo} if repo else {}),
                                           **({"engine": engine} if engine else {})})
         return {k: found.get(k) for k in ("engine", "model", "weights", "fits", "stages",
@@ -509,10 +546,12 @@ class Server:
     def looma_model_add(self, name: str, repo: str = "", engine: str = "",
                         recipe: Optional[dict] = None, base: str = "", adapter: str = "",
                         preset: Optional[dict] = None, summary: str = "", always: bool = False,
-                        handle: str = "", own_nodes: bool = False, node: str = ""):
+                        handle: str = "", own_nodes: bool = False, node: str = "",
+                        comfy: str = ""):
         payload = ops.entry_payload(name=name, repo=repo, engine=engine, recipe=recipe, base=base,
                                     adapter=adapter, preset=preset, summary=summary,
-                                    always=always, own=own_nodes, node=node)
+                                    always=always, own=own_nodes, node=node,
+                                    comfy=ops.read_comfy(comfy) if comfy else None)
         return self._model(ops.add_entry(self.looma, payload, handle))
 
     def looma_engine_list(self):
@@ -645,7 +684,7 @@ class Server:
                         price: Optional[dict] = None, preset: Optional[dict] = None,
                         always: Optional[bool] = None, own_nodes: Optional[bool] = None,
                         engine_version=None, fields: Optional[dict] = None,
-                        node: Optional[str] = None):
+                        node: Optional[str] = None, comfy: str = ""):
         entry = ops.find_entry(self.looma, name)
         changes = {k: v for k, v in (("summary", summary), ("price", price), ("preset", preset),
                                      ("engine_version", engine_version), ("fields", fields),
@@ -656,10 +695,27 @@ class Server:
                            if always else {"min_replicas": 0})
         if own_nodes is not None:
             changes["contours"] = ["own"] if own_nodes else None
+        if comfy:
+            found = ops.read_comfy(comfy)
+            changes.update(description=found["description"], graph=found["graph"])
         if not changes:
             raise ops.OpError("что поменять? summary, price, preset, always, own_nodes, node, "
-                              "fields или engine_version")
+                              "fields, engine_version или comfy")
         return self._model(self.looma.entries.update(entry["id"], changes))
+
+    def looma_comfy_sets(self):
+        return {"extensions": self.looma.comfy.extensions()}
+
+    def looma_comfy_inspect(self, graph: str, write: str = ""):
+        report = self.looma.comfy.inspect(ops.read_graph(graph))
+        if write:
+            target = Path(write)
+            if target.exists():
+                raise ops.OpError(f"{target} уже есть: черновик не перезаписывает файл")
+            graph_file = os.path.relpath(Path(graph).resolve(), target.resolve().parent)
+            target.write_text(ops.comfy_yaml(report, graph_file), encoding="utf-8")
+            report = {**report, "written": str(target)}
+        return report
 
     def looma_model_logs(self, name: str, tail: int = 200):
         entry = ops.find_entry(self.looma, name)

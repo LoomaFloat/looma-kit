@@ -101,6 +101,35 @@ def test_shape_says_service_engine_or_both(tmp_path):
     assert "cuda" in pipe["ids"] and pipe["shape"]["code"] == "engine"
 
 
+def test_comfyui_graph_is_computation_on_the_card(tmp_path):
+    graph = {"3": {"class_type": "KSampler", "inputs": {"seed": 1}},
+             "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "x.safetensors"}}}
+    studio = assessed(project(tmp_path / "studio", {
+        "requirements.txt": "flask\nrequests\n",
+        "app.py": ("import os\nfrom flask import Flask\napp = Flask(__name__)\n"
+                   "COMFY = os.environ.get('COMFY_URL', 'http://127.0.0.1:8188')\n"),
+        "workflow_api.json": json.dumps(graph, indent=2),
+    }))
+    # Веб, который шлёт граф в ComfyUI: не просто сервис, граф считает карта.
+    assert studio["ids"]["comfyui"] == "change" and studio["shape"]["code"] == "both"
+    assert "движке comfyui" in studio["shape"]["text"]
+    where = next(f["where"] for f in studio["findings"] if f["id"] == "comfyui")
+    assert where[0] == "workflow_api.json:1" and any(w.startswith("app.py:") for w in where)
+    detail = next(f["detail"] for f in studio["findings"] if f["id"] == "comfyui")
+    assert "Граф ComfyUI" in detail and "looma comfy inspect" in detail
+    editor = assessed(project(tmp_path / "editor", {
+        "flow.json": json.dumps({"nodes": [{"id": 1, "type": "KSampler"}], "links": []}),
+    }))
+    assert editor["shape"]["code"] == "engine" and "comfyui" in editor["ids"]
+    site = assessed(project(tmp_path / "site", {
+        "requirements.txt": "flask\n",
+        "app.py": "from flask import Flask\napp = Flask(__name__)  # comfortable defaults\n",
+        "package.json": json.dumps({"name": "site", "type": "module"}),
+    }))
+    assert "comfyui" not in site["ids"] and site["shape"]["code"] == "service"
+    assert "--timeout 300" in site["manifest_draft"]
+
+
 def test_node_compose_project_maps_services(tmp_path):
     package = {"name": "shop", "scripts": {"start": "node server.js"},
                "dependencies": {"express": "^4", "mongoose": "^8", "ioredis": "^5"},

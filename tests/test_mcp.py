@@ -149,7 +149,7 @@ def test_agent_adds_prices_and_publishes_an_own_model(session):
                          preset={"system": "Ты переводчик."})
     assert error and "имя автора" in text
     error, text = s.tool("looma_model_add", name="translate", base="chat-model")
-    assert error and "Одно из трёх" in text
+    assert error and "Одно из четырёх" in text
 
     error, made = s.tool("looma_model_add", name="translate", base="chat-model", handle="anna",
                          preset={"system": "Ты переводчик."}, summary="Перевод договоров")
@@ -335,3 +335,28 @@ def test_engine_from_a_folder_to_review_and_reading_code(session, tmp_path):
     assert not error and file["text"].startswith("print")
     error, text = s.tool("looma_engine_code", engine="anna/echo")
     assert error and "нет одобренной версии" in text
+
+
+def test_agent_turns_a_comfyui_graph_into_a_model(session):
+    s, state, tmp = session
+    s.request("initialize", {"protocolVersion": "2025-03-26"})
+    tools = {t["name"]: t for t in s.request("tools/list")["result"]["tools"]}
+    assert "looma_comfy_inspect" in tools and "comfy" in tools["looma_model_add"][
+        "inputSchema"]["properties"]
+    graph = tmp / "workflow_api.json"
+    graph.write_text(json.dumps({"6": {"class_type": "CLIPTextEncode", "inputs": {"text": "x"}},
+                                 "7": {"class_type": "CustomFaceDetailer", "inputs": {}}}))
+    error, report = s.tool("looma_comfy_inspect", graph=str(graph),
+                           write=str(tmp / "m.comfy.yaml"))
+    assert not error and report["unknown"] == ["CustomFaceDetailer"]
+    assert report["written"].endswith("m.comfy.yaml") and (tmp / "m.comfy.yaml").exists()
+    error, checked = s.tool("looma_model_check", comfy=str(tmp / "m.comfy.yaml"))
+    assert not error and checked["engine"] == "comfyui" and checked["fits"] is True
+    error, made = s.tool("looma_model_add", name="fox", comfy=str(tmp / "m.comfy.yaml"),
+                         handle="anna")
+    assert not error and made["name"] == "anna/fox"
+    assert state.entries[-1]["recipe"]["engine"] == "comfyui"
+    error, _changed = s.tool("looma_model_set", name="fox", comfy=str(tmp / "m.comfy.yaml"))
+    assert not error and state.regraphs
+    error, sets = s.tool("looma_comfy_sets")
+    assert not error and sets["extensions"][0]["ref"] == "looma-sets/kjnodes"
