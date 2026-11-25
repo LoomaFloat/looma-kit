@@ -93,6 +93,10 @@ def make_handler(state: State):
                 if self.headers.get("Authorization"):
                     return self._error(400, "хранилище не берёт ключ API")
                 return self._send(200, raw=MP4, kind="video/mp4")
+            if path.startswith("/files/run_"):         # файлы прогонов там же
+                if self.headers.get("Authorization"):
+                    return self._error(400, "хранилище не берёт ключ API")
+                return self._send(200, raw=b"PNG:" + path.encode(), kind="image/png")
             if path == "/api/device/code":
                 state.device_polls = 0
                 return self._send(200, {"device_code": "dev-secret", "user_code": "ABCD-EFGH",
@@ -196,11 +200,16 @@ def make_handler(state: State):
                     with tarfile.open(fileobj=io.BytesIO(base64.b64decode(doc["archive"])),
                                       mode="r:gz") as tar:
                         names = [m.name for m in tar.getmembers()]
+                        manifest = tar.extractfile("engine/looma-extension.yaml") \
+                            if "engine/looma-extension.yaml" in names else None
+                        comfy = bool(manifest) and b"extends: comfyui" in manifest.read()
                     state.engine_archives = getattr(state, "engine_archives", []) + [names]
                 elif len(doc.get("commit") or "") != 40:
                     return self._error(400, "commit: коммит целиком, 40 знаков")
+                else:
+                    comfy = False
                 kind = doc.get("kind") or "engine"
-                name = "upper" if kind == "extension" else "echo"
+                name = ("kjnodes" if comfy else "upper") if kind == "extension" else "echo"
                 ref = f"{state.handle}/{name}"
                 layer = next((x for x in layers if x["ref"] == ref), None)
                 if layer is None:
@@ -219,7 +228,8 @@ def make_handler(state: State):
                     "files": 2, "review": "own" if own else "reviewed",
                     "contours": ["own"] if own else [],
                     "source": source, "fee": doc.get("fee") or {},
-                    "extends": f"{state.handle}/echo" if kind == "extension" else None})
+                    "extends": ("looma/comfyui" if comfy else f"{state.handle}/echo")
+                    if kind == "extension" else None})
                 if own:
                     layer["own"] = number
                 return self._send(200, {**layer, "submitted": number})
@@ -343,6 +353,13 @@ def make_handler(state: State):
                 return self._layers(method, path, body)
             if path == "/api/comfyui/extensions":
                 return self._send(200, {"extensions": [COMFY_SET]})
+            if path == "/api/comfyui/runs" or path.startswith("/api/comfyui/runs/"):
+                return self._runs(method, path, query, body)
+            if path == "/api/comfyui/editor" and method == "POST":
+                return self._send(200, {"url": "https://comfyui.apps.example.ru/login?ticket=t1",
+                                        "expires_in": 120})
+            if path == "/api/comfyui/weights" or path.startswith("/api/comfyui/weights/"):
+                return self._editor_weights(method, path, body)
             if path == "/api/comfyui/inspect":
                 graph = (json.loads(body) or {}).get("graph") or {}
                 if "nodes" in graph and "links" in graph:
@@ -630,6 +647,114 @@ def make_handler(state: State):
                             "instance": 0, "release": app["prod_release"], "state": "running",
                             "restarts": 0, "last_exit": ""})
             return out
+
+        def _editor_weights(self, method, path, body):
+            """Веса редактора: `/api/comfyui/weights` как у оркестратора."""
+            mine = state.__dict__.setdefault("editor_weights", {})
+            ref = path[len("/api/comfyui/weights/"):] if path.startswith(
+                "/api/comfyui/weights/") else ""
+            if method == "GET":
+                return self._send(200, {"mine": list(mine.values()), "limit": 100,
+                                        "platform": [{"folder": "vae", "repo": "looma/vae",
+                                                      "file": "sdxl_vae.safetensors",
+                                                      "name": "looma/vae/sdxl_vae.safetensors",
+                                                      "revision": "c" * 40, "size": 2 ** 28,
+                                                      "models": ["comfy-sdxl"]}]})
+            if method == "POST":
+                doc = json.loads(body)
+                parts = str(doc.get("ref") or "").split("/")
+                if len(parts) < 3:
+                    return self._error(400, "нужен владелец/репозиторий/путь/к/файлу")
+                if not str(doc.get("ref")).endswith(".safetensors"):
+                    return self._error(400, "файлы весов принимаются только в safetensors")
+                again = doc["ref"] in mine
+                item = mine.get(doc["ref"]) or {"id": len(mine) + 1}
+                item.update(folder=doc.get("folder"), repo="/".join(parts[:2]),
+                            file="/".join(parts[2:]), name=doc["ref"],
+                            revision=doc.get("revision") or "d" * 40, size=2 ** 30 * 7)
+                mine[doc["ref"]] = item
+                return self._send(200, {**item, "updated": again})
+            if method == "DELETE":
+                hit = next((k for k, w in mine.items() if k == ref or str(w["id"]) == ref), None)
+                if hit is None:
+                    return self._error(404, f"в весах редактора нет {ref!r}")
+                return self._send(200, {**mine.pop(hit), "removed": True})
+            return self._error(405, "нет такого метода")
+
+        def _runs(self, method, path, query, body):
+            """Прогоны графа без модели: `/api/comfyui/runs` как у оркестратора.
+            Прогон идёт на первом опросе и готов на втором."""
+            runs = state.__dict__.setdefault("runs", {})
+            parts = [p for p in path.split("/") if p][3:]
+            if not parts and method == "POST":
+                doc = json.loads(body)
+                graph = doc.get("graph") or {}
+                state.run_requests = getattr(state, "run_requests", []) + [doc]
+                named = doc.get("weights")
+                if named is None and "repo: " in (doc.get("description") or ""):
+                    named = [{"folder": "checkpoints", "repo": "stabilityai/sdxl",
+                              "file": "sdxl.safetensors"}]
+                # Веса не названы — загрузчики берут файлы из весов редактора.
+                editor = named is None
+                if editor:
+                    named = [{**w, "file": w["name"]} for w in
+                             state.__dict__.get("editor_weights", {}).values()] + \
+                            [{**w, "file": w["file"].rsplit("/", 1)[-1]} for w in
+                             state.__dict__.get("editor_weights", {}).values()]
+                for node_id, node in graph.items():
+                    value = (node.get("inputs") or {}).get("ckpt_name")
+                    if value and not any(w["file"] == value for w in named or []):
+                        where = ("такого файла нет ни в весах редактора, ни в weights прогона"
+                                 if editor else "а в weights такого файла нет")
+                        return self._error(400, f"узел {node_id} (CheckpointLoaderSimple) грузит "
+                                                f"{value!r}, {where}")
+                    image = (node.get("inputs") or {}).get("image")
+                    if node.get("class_type") == "LoadImage" and image not in (doc.get("files")
+                                                                               or {}):
+                        return self._error(400, f"узел {node_id} (LoadImage) грузит {image!r}: "
+                                                "приложите этот файл к прогону (files)")
+                run_id = f"run_{len(runs) + 1:024d}"
+                state.__dict__.setdefault("run_graphs", {})[run_id] = graph
+                runs[run_id] = {"id": run_id, "object": "run", "status": "queued",
+                                "progress": 0, "stage": "queue", "polls": 0,
+                                "graph": "sha256:" + "a" * 64}
+                return self._send(200, {k: v for k, v in runs[run_id].items() if k != "polls"})
+            if not parts and method == "GET":
+                return self._send(200, {"runs": [{k: v for k, v in r.items() if k != "polls"}
+                                                 for r in runs.values()]})
+            run = runs.get(parts[0])
+            if run is None:
+                return self._error(404, "нет такого задания")
+            if parts[1:] == ["graph"]:
+                return self._send(200, state.run_graphs[parts[0]])
+            if parts[1:] == ["cancel"]:
+                run.update(status="cancelled", stage="cancelled", error={"message": "снято"})
+            elif len(parts) == 3 and parts[1] == "outputs":
+                return self._send(302, raw=b"", headers={
+                    "Location": f"http://127.0.0.1:{self.server.server_address[1]}/files/"
+                                f"{parts[0]}_{parts[2]}.png"})
+            elif run["status"] not in ("completed", "cancelled", "failed"):
+                run["polls"] += 1
+                if run["polls"] == 1:
+                    pass
+                elif run["polls"] == 2:
+                    # Как на площадке: прогон ещё ждёт, а стадия раздачи уже другая.
+                    run.update(stage="dispatch")
+                elif run["polls"] == 3:
+                    run.update(status="in_progress", stage="running", progress=40,
+                               at={"node": "3", "value": 5, "max": 20, "done": 2})
+                else:
+                    run.pop("at", None)
+                    run.update(status="completed", stage="completed", progress=100,
+                               timings={"total_s": 4.0},
+                               outputs=[{"index": 0, "node": "9", "filename": "ComfyUI_0.png",
+                                         "content_type": "image/png", "bytes": 2048,
+                                         "type": "output"},
+                                        {"index": 1, "node": "15", "filename": "prev.png",
+                                         "content_type": "image/png", "bytes": 1024,
+                                         "type": "temp"}],
+                               ui={"14": {"text": ["готово"]}})
+            return self._send(200, {k: v for k, v in run.items() if k != "polls"})
 
         def _envs(self, app):
             return [{"environment": env, "release": app[f"{env}_release"],

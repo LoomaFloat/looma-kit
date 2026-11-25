@@ -303,13 +303,57 @@ TOOLS = [
                     "узлов площадки (их ставит в extensions черновика), каких нет нигде; "
                     "узел-выход, файлы весов из загрузчиков, поля, похожие на входы модели, род "
                     "модели и что поправить. С write — записать черновик описания *.comfy.yaml "
-                    "(repo у весов дописывает автор).",
+                    "(файлы из весов редактора уже с repo, остальным repo дописывает автор). "
+                    "Граф удачного прогона берётся по номеру run_…: так прогон становится моделью.",
      "inputSchema": {"type": "object", "properties": {
          "graph": {"type": "string", "description": "путь к графу в API-формате "
-                                                    "(Workflow → Export (API))"},
+                                                    "(Workflow → Export (API)) или номер прогона run_… (граф прогона с "
+                                                    "площадки; с write он ляжет рядом с черновиком)"},
          "write": {"type": "string", "description": "куда записать черновик описания; файл "
                                                     "не перезаписывается"}},
          "required": ["graph"]}},
+    {"name": "looma_comfy_run",
+     "description": "Прогнать граф ComfyUI на площадке, не заводя модель, и забрать файлы: так "
+                    "проверяют, что граф работает на площадке, до looma_model_add, и отлаживают "
+                    "его без своей видеокарты. Граф — API-формат или описание *.comfy.yaml "
+                    "(тогда веса из него); веса — открытые файлы HuggingFace с repo, а без "
+                    "них загрузчики берут файлы из весов редактора (looma_comfy_weights). Узлы — "
+                    "ядро и открытые наборы (looma_comfy_sets), наборы называть не нужно. "
+                    "Входные файлы, которые граф грузит по имени (LoadImage), лежащие рядом с "
+                    "графом, едут сами. Пока бесплатно; у автора один прогон идёт и до пяти "
+                    "ждут, прогон дольше 10 минут снимается.",
+     "inputSchema": {"type": "object", "properties": {
+         "graph": {"type": "string", "description": "путь к графу в API-формате или к описанию "
+                                                    "*.comfy.yaml"},
+         "weights": {"type": "string", "description": "с графом JSON: путь к описанию "
+                                                      "*.comfy.yaml, из которого взять веса"},
+         "files": {"type": "object", "description": "входные файлы: имя в графе → путь"},
+         "out": {"type": "string", "description": "куда сохранить файлы прогона"},
+         "wait": {"type": "boolean", "description": "ждать конца (по умолчанию да)"}},
+         "required": ["graph"]}},
+    {"name": "looma_comfy_runs",
+     "description": "Свои прогоны графов ComfyUI (looma_comfy_run): состояние, файлы по узлам, "
+                    "ошибка. С id — один прогон; с cancel — снять его.",
+     "inputSchema": {"type": "object", "properties": {
+         "id": {"type": "string", "description": "номер прогона run_…"},
+         "cancel": {"type": "boolean", "description": "снять прогон id"}}}},
+    {"name": "looma_comfy_weights",
+     "description": "Веса редактора ComfyUI: свои файлы автора с HuggingFace и общий список "
+                    "площадки (веса открытых моделей ComfyUI). Из них редактор заполняет "
+                    "списки загрузчиков, а looma_comfy_run без весов берёт файлы, которые "
+                    "грузит граф. В графе файл называют владелец/репозиторий/файл или только "
+                    "именем файла, если оно одно в списках. add проверяет файл по правилам "
+                    "весов модели (открытый репозиторий, safetensors или формат открытого "
+                    "набора, папка ComfyUI) и закрепляет коммитом; своих до 100.",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["list", "add", "remove"],
+                    "description": "list (по умолчанию), add или remove"},
+         "ref": {"type": "string", "description": "add, remove: владелец/репозиторий/путь на "
+                                                  "HuggingFace; remove — или номер из списка"},
+         "folder": {"type": "string", "description": "add: папка ComfyUI (checkpoints, "
+                                                     "diffusion_models, loras, vae, "
+                                                     "text_encoders…) или набора узлов"},
+         "revision": {"type": "string", "description": "add: коммит; без него — последний"}}}},
     {"name": "looma_model_logs",
      "description": "Хвост лога реплик своей модели (свежие три запуска): почему движок не "
                     "встал, упал или отвечает ошибкой. Состояние и ошибка задачи, текст вывода "
@@ -707,15 +751,61 @@ class Server:
         return {"extensions": self.looma.comfy.extensions()}
 
     def looma_comfy_inspect(self, graph: str, write: str = ""):
-        report = self.looma.comfy.inspect(ops.read_graph(graph))
+        if write and Path(write).exists():
+            raise ops.OpError(f"{write} уже есть: черновик не перезаписывает файл")
+        parsed, source = ops.graph_source(self.looma, graph, write)
+        report = self.looma.comfy.inspect(parsed)
         if write:
             target = Path(write)
-            if target.exists():
-                raise ops.OpError(f"{target} уже есть: черновик не перезаписывает файл")
-            graph_file = os.path.relpath(Path(graph).resolve(), target.resolve().parent)
+            graph_file = os.path.relpath(source.resolve(), target.resolve().parent)
             target.write_text(ops.comfy_yaml(report, graph_file), encoding="utf-8")
             report = {**report, "written": str(target)}
         return report
+
+    def looma_comfy_run(self, graph: str, weights: str = "", files: Optional[dict] = None,
+                        out: str = "", wait: bool = True):
+        source = Path(graph)
+        description = ""
+        if source.suffix.lower() in (".yaml", ".yml"):
+            found = ops.read_comfy(source)
+            parsed, description = found["graph"], found["description"]
+        else:
+            parsed = ops.read_graph(source)
+            if weights:
+                description = ops.read_comfy_text(weights)
+        attached = ops.run_files(parsed, source.resolve().parent, files or {})
+        made = self.looma.comfy.run(parsed, description=description, files=attached)
+        if not wait:
+            return {**made, "files_sent": sorted(attached)}
+        done = self.looma.comfy.wait_run(made["id"])
+        if done.get("status") == "completed":
+            saved = ops.save_run(self.looma, done, Path(out or f"comfy-{done['id'][-8:]}"))
+            done = {**done, "saved": [str(path) for path in saved]}
+        return {**done, "files_sent": sorted(attached)}
+
+    def looma_comfy_runs(self, id: str = "", cancel: bool = False):  # noqa: A002 — имя поля
+        if cancel:
+            if not id:
+                raise ops.OpError("чей прогон снять? id")
+            return self.looma.comfy.cancel_run(id)
+        if id:
+            return self.looma.comfy.run_status(id)
+        return {"runs": self.looma.comfy.runs()}
+
+    def looma_comfy_weights(self, action: str = "list", ref: str = "", folder: str = "",
+                            revision: str = ""):
+        if action in ("", "list"):
+            return self.looma.comfy.weights()
+        if action == "add":
+            if not ref or not folder:
+                raise ops.OpError("add: нужны ref (владелец/репозиторий/путь) и folder "
+                                  "(checkpoints, loras, vae…)")
+            return self.looma.comfy.add_weight(ref, folder, revision=revision)
+        if action == "remove":
+            if not ref:
+                raise ops.OpError("remove: нужен ref или номер из списка")
+            return self.looma.comfy.remove_weight(ref)
+        raise ops.OpError(f"action {action!r}: бывает list, add, remove")
 
     def looma_model_logs(self, name: str, tail: int = 200):
         entry = ops.find_entry(self.looma, name)

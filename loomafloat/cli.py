@@ -44,6 +44,8 @@ from loomafloat.http import LoomaError
 from loomafloat.pack import MANIFEST, PackError, manifest_name
 
 ENVIRONMENTS = ("prod", "staging")
+#: Движок площадки, расширения которого — наборы узлов ComfyUI.
+COMFYUI_ENGINE = "looma/comfyui"
 
 
 class Stop(Exception):
@@ -286,10 +288,34 @@ def cmd_comfy(args) -> None:
             for line in ops.comfy_set_lines(item):
                 say(line)
         return
+    if args.action in ("run", "runs", "cancel"):
+        return _comfy_runs(looma, args)
+    if args.action == "weights":
+        return _comfy_weights(looma, args)
+    if args.action == "editor":
+        try:
+            made = looma.comfy.editor()
+        except LoomaError as exc:
+            raise Stop(str(exc)) from None
+        opened = False
+        if not args.no_wait:
+            import webbrowser
+
+            try:
+                opened = webbrowser.open(made["url"])
+            except Exception:                        # noqa: BLE001 — браузера может не быть
+                opened = False
+        say(("редактор ComfyUI открыт в браузере" if opened else
+             "откройте в браузере (адрес годится один раз, пару минут):") + f"\n{made['url']}")
+        say("узлы — ядро и открытые наборы; веса загрузчиков — `looma comfy weights`; каждый "
+            "запуск — прогон, его видно в `looma comfy runs`")
+        return
     if not args.graph:
-        raise Stop("нужен граф: `looma comfy inspect workflow_api.json`")
+        raise Stop("нужен граф: `looma comfy inspect workflow_api.json` или номер прогона run_…")
+    if args.write and Path(args.write).exists():
+        raise Stop(f"{args.write} уже есть: черновик не перезаписывает файл")
     try:
-        graph = ops.read_graph(args.graph)
+        graph, source = ops.graph_source(looma, args.graph, args.write or "")
         report = looma.comfy.inspect(graph)
     except (ops.OpError, LoomaError) as exc:
         raise Stop(str(exc)) from None
@@ -300,12 +326,130 @@ def cmd_comfy(args) -> None:
             say(line)
     if args.write:
         target = Path(args.write)
-        if target.exists():
-            raise Stop(f"{target} уже есть: черновик не перезаписывает файл")
-        graph_file = os.path.relpath(Path(args.graph).resolve(), target.resolve().parent)
+        graph_file = os.path.relpath(source.resolve(), target.resolve().parent)
         target.write_text(ops.comfy_yaml(report, graph_file), encoding="utf-8")
-        say(f"черновик описания: {target}. Допишите repo у весов, проверьте входы и выход, "
+        blank = [w["file"] for w in (report.get("draft") or {}).get("weights") or []
+                 if not w.get("repo")]
+        todo = f"Допишите repo у {', '.join(blank)}, проверьте" if blank else "Проверьте"
+        say(f"черновик описания: {target}. {todo} входы и выход, "
             f"затем `looma model check --from {target}`")
+
+
+def _comfy_weights(looma, args) -> None:
+    """Веса редактора: список, add — добавить файл, rm — убрать."""
+    what = (args.graph or "").strip()
+    try:
+        if what in ("", "list"):
+            doc = looma.comfy.weights()
+            if args.json:
+                return say(json.dumps(doc, ensure_ascii=False, indent=2))
+            for line in ops.weights_lines(doc):
+                say(line)
+            return
+        if what == "add":
+            if not args.ref or not args.folder:
+                raise Stop("что добавить и куда: `looma comfy weights add владелец/репозиторий/"
+                           "файл --folder checkpoints` (папки: checkpoints, diffusion_models, "
+                           "loras, vae, text_encoders, clip_vision, controlnet, upscale_models…)")
+            made = looma.comfy.add_weight(args.ref, args.folder, revision=args.revision or "")
+            if args.json:
+                return say(json.dumps(made, ensure_ascii=False, indent=2))
+            verb = "закреплён заново" if made.get("updated") else "добавлен"
+            say(f"{made['name']} {verb}: {made['folder']}, коммит {made['revision'][:8]}, "
+                f"{ops.size_text(made.get('size'))}. В графе: {made['name']!r}")
+            return
+        if what in ("rm", "remove"):
+            if not args.ref:
+                raise Stop("что убрать: `looma comfy weights rm <номер | владелец/репозиторий/файл>`")
+            gone = looma.comfy.remove_weight(args.ref)
+            return say(f"{gone['name']} убран из весов редактора")
+    except LoomaError as exc:
+        raise Stop(str(exc)) from None
+    raise Stop(f"weights {what}: бывает список (`looma comfy weights`), add и rm")
+
+
+def _comfy_runs(looma, args) -> None:
+    """Прогоны графа без модели: run — прогнать и дождаться, runs — свои
+    прогоны или один подробно, cancel — снять."""
+    try:
+        if args.action == "runs":
+            if args.graph:
+                doc = looma.comfy.run_status(args.graph)
+                if args.json:
+                    return say(json.dumps(doc, ensure_ascii=False, indent=2))
+                for line in ops.run_lines(doc):
+                    say(line)
+                return
+            found = looma.comfy.runs()
+            if args.json:
+                return say(json.dumps(found, ensure_ascii=False, indent=2))
+            if not found:
+                return say("прогонов нет: `looma comfy run граф.json --weights описание.comfy.yaml`")
+            for doc in found:
+                say(f"{doc['id']}  {ops.run_state(doc)}")
+            return
+        if args.action == "cancel":
+            if not args.graph:
+                raise Stop("чей прогон снять? `looma comfy cancel run_…`")
+            return say(ops.run_state(looma.comfy.cancel_run(args.graph)))
+        if not args.graph:
+            raise Stop("нужен граф: `looma comfy run workflow_api.json --weights "
+                       "описание.comfy.yaml` или `looma comfy run описание.comfy.yaml`")
+        source = Path(args.graph)
+        description = ""
+        if source.suffix.lower() in (".yaml", ".yml"):
+            found = ops.read_comfy(source)
+            graph, description = found["graph"], found["description"]
+        else:
+            graph = ops.read_graph(source)
+            if args.weights:
+                description = ops.read_comfy_text(args.weights)
+        named = {}
+        for item in args.file or []:
+            name, sep, path = item.partition("=")
+            if not sep or not name.strip() or not path.strip():
+                raise Stop(f"--file {item}: нужно имя=путь, имя — как в графе (cat.png=./cat.png)")
+            named[name.strip()] = path.strip()
+        files = ops.run_files(graph, source.resolve().parent, named)
+        made = looma.comfy.run(graph, description=description, files=files)
+    except (ops.OpError, LoomaError) as exc:
+        raise Stop(str(exc)) from None
+    if files:
+        say(f"входные файлы: {', '.join(sorted(files))}")
+    if args.no_wait:
+        say(f"{made['id']}: {ops.run_state(made)}. Ход: `looma comfy runs {made['id']}`")
+        return
+    say(f"прогон {made['id']}")
+    shown = [""]
+
+    def progress(doc: dict) -> None:
+        # Площадка меняет и служебные поля (стадия раздачи): строку,
+        # которая уже на экране, второй раз не печатаем.
+        line = ops.run_state(doc, graph)
+        if line != shown[0]:
+            say(f"  {line}")
+            shown[0] = line
+
+    try:
+        done = looma.comfy.wait_run(made["id"], on_change=progress)
+    except LoomaError as exc:
+        raise Stop(str(exc)) from None
+    if args.json:
+        say(json.dumps(done, ensure_ascii=False, indent=2))
+    if done.get("status") != "completed":
+        raise Stop(ops.run_state(done))
+    out = Path(args.out or f"comfy-{done['id'][-8:]}")
+    try:
+        saved = ops.save_run(looma, done, out)
+    except (OSError, LoomaError) as exc:
+        raise Stop(f"файлы прогона не сохранились: {exc}") from None
+    for path in saved:
+        say(f"  {path}")
+    for line in ops.run_lines(done)[1:]:
+        if line.lstrip().startswith("узел"):
+            say(line)
+    if not saved:
+        say("  граф ничего не сохранил: у прогона нет файлов")
 
 
 def cmd_engine(args) -> None:
@@ -339,8 +483,7 @@ def cmd_engine(args) -> None:
                 + ("Модель на ней: `looma model add <имя> --engine "
                    f"{made['ref']}` (встанет на свой узел; узлы: `looma node list`). "
                    "Уже есть модель: `looma model set <имя> --engine-version "
-                   f"{version}`" if kind == "engine" else
-                   "Расширение подключают в модель полем extensions"))
+                   f"{version}`" if kind == "engine" else _how_to_use(made)))
         elif action == "submit":
             github = bool(args.repo or args.commit)
             if github and (not args.repo or not args.commit):
@@ -375,14 +518,14 @@ def cmd_engine(args) -> None:
                 say(line)
             if args.own:
                 say(f"версия {made.get('submitted')} без ревью: работает только на ваших "
-                    f"узлах. Модель на ней: `looma model add <имя> --engine {made['ref']}`")
+                    f"узлах. Её {_how_to_use(made)}")
                 return
             image = any(v.get("form") == "image" and v["number"] == made.get("submitted")
                         for v in made.get("versions") or [])
             say((f"версия {made.get('submitted')}: площадка собирает образ, это несколько минут; "
                  "ход виден в `looma engine`. Собранную версию" if image else
                  f"версия {made.get('submitted')} ждёт проверки площадки. Одобренную версию")
-                + f" берут в модель: `looma model add <имя> --engine {made['ref']}`")
+                + f" {_how_to_use(made)}")
         elif action == "code":
             if not name or "/" not in name:
                 raise Stop("чей движок? looma engine code автор/движок [--file путь] "
@@ -678,6 +821,19 @@ def cmd_call(args) -> None:
         sys.stdout.write(piece)
         sys.stdout.flush()
     say("")
+
+
+def _how_to_use(made: dict) -> str:
+    """Как взять слой в модель. Движок называют при заведении модели,
+    расширение подключают полем extensions, набор узлов ComfyUI пишут в
+    описание графа (`looma comfy inspect` подставляет его сам)."""
+    ref = made["ref"]
+    if made.get("kind") != "extension":
+        return f"берут в модель: `looma model add <имя> --engine {ref}`"
+    if any(v.get("extends") == COMFYUI_ENGINE for v in made.get("versions") or []):
+        return (f"подключают в описании модели ComfyUI: `extensions: [{ref}]`. "
+                "`looma comfy inspect` подставляет нужные наборы сам")
+    return f"подключают в модель полем extensions: `{ref}`"
 
 
 def _video_suffix(data: bytes) -> str:
@@ -1140,15 +1296,39 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--yes", action="store_true", help="delete: подтвердить удаление")
     p.add_argument("--tail", type=int, default=200, help="logs: сколько строк")
 
-    p = command("comfy", cmd_comfy, "граф ComfyUI как модель: разбор графа и черновик описания")
-    p.add_argument("action", choices=("inspect", "sets"),
+    p = command("comfy", cmd_comfy, "граф ComfyUI: разбор, прогон на площадке, модель")
+    p.add_argument("action", choices=("inspect", "sets", "run", "runs", "cancel", "weights",
+                                      "editor"),
                    help="inspect — какие узлы, выход, веса и входы у графа, какие наборы узлов "
-                        "он берёт, что поправить; sets — наборы узлов, доступные модели")
+                        "он берёт, что поправить; sets — наборы узлов площадки; run — прогнать "
+                        "граф на площадке без модели и забрать файлы; runs — свои прогоны "
+                        "(с номером — один подробно); cancel — снять прогон; weights — веса "
+                        "редактора: список, add, rm; editor — открыть редактор ComfyUI "
+                        "площадки в браузере")
     p.add_argument("graph", nargs="?",
-                   help="inspect: граф в API-формате (в ComfyUI: Workflow → Export (API))")
+                   help="inspect, run: граф в API-формате (в ComfyUI: Workflow → Export (API)) "
+                        "или, у run, описание *.comfy.yaml; inspect: или номер прогона run_… "
+                        "(граф прогона с площадки, с --write ляжет рядом); runs, cancel: номер "
+                        "прогона run_…; weights: add или rm")
+    p.add_argument("ref", nargs="?",
+                   help="weights add: файл владелец/репозиторий/путь на HuggingFace; weights rm: "
+                        "он же или номер из списка")
+    p.add_argument("--folder", metavar="папка",
+                   help="weights add: папка ComfyUI (checkpoints, loras, vae…) или набора узлов")
+    p.add_argument("--revision", metavar="коммит",
+                   help="weights add: коммит HuggingFace; без него — последний")
     p.add_argument("--write", metavar="файл.comfy.yaml",
-                   help="записать черновик описания модели (не перезаписывает файл)")
-    p.add_argument("--json", action="store_true", help="разбор целиком, JSON")
+                   help="inspect: записать черновик описания модели (не перезаписывает файл)")
+    p.add_argument("--weights", metavar="описание.comfy.yaml",
+                   help="run: веса графа из описания модели (repo у каждого файла); без него "
+                        "загрузчики берут файлы из весов редактора (`looma comfy weights`)")
+    p.add_argument("--file", action="append", metavar="имя=путь",
+                   help="run: входной файл, который граф грузит по имени (LoadImage); файлы с "
+                        "такими именами рядом с графом едут сами")
+    p.add_argument("--out", metavar="папка", help="run: куда сохранить файлы прогона")
+    p.add_argument("--no-wait", action="store_true",
+                   help="run: не ждать, вернуть номер; editor: не открывать браузер, только адрес")
+    p.add_argument("--json", action="store_true", help="ответ целиком, JSON")
 
     p = command("engine", cmd_engine, "свои движки и расширения: на свои узлы без ревью, на "
                                       "ревью для сети, открыть авторам")

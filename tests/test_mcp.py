@@ -360,3 +360,57 @@ def test_agent_turns_a_comfyui_graph_into_a_model(session):
     assert not error and state.regraphs
     error, sets = s.tool("looma_comfy_sets")
     assert not error and sets["extensions"][0]["ref"] == "looma-sets/kjnodes"
+
+
+def test_agent_runs_a_comfyui_graph_without_a_model(session, monkeypatch):
+    """Агент прогоняет граф на площадке до того, как заводить модель."""
+    s, state, tmp = session
+    monkeypatch.setattr("loomafloat.client.time.sleep", lambda sec: None)
+    s.request("initialize", {"protocolVersion": "2025-03-26"})
+    tools = {t["name"] for t in s.request("tools/list")["result"]["tools"]}
+    assert {"looma_comfy_run", "looma_comfy_runs"} <= tools
+    graph = tmp / "workflow_api.json"
+    graph.write_text(json.dumps({
+        "4": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "sdxl.safetensors"}},
+        "12": {"class_type": "LoadImage", "inputs": {"image": "cat.png"}}}))
+    (tmp / "photo.png").write_bytes(b"\x89PNG photo")
+    described = tmp / "m.comfy.yaml"
+    described.write_text("graph: workflow_api.json\nweights:\n  - {folder: checkpoints, "
+                         "repo: stabilityai/sdxl, file: sdxl.safetensors}\n")
+    error, text = s.tool("looma_comfy_run", graph=str(graph))
+    assert error and "weights" in text
+    error, done = s.tool("looma_comfy_run", graph=str(graph), weights=str(described),
+                         files={"cat.png": str(tmp / "photo.png")}, out=str(tmp / "out"))
+    assert not error and done["status"] == "completed" and done["files_sent"] == ["cat.png"]
+    assert len(done["saved"]) == 2 and (tmp / "out" / "0_9_ComfyUI_0.png").exists()
+    error, queued = s.tool("looma_comfy_run", graph=str(described), wait=False,
+                           files={"cat.png": str(tmp / "photo.png")})
+    assert not error and queued["status"] == "queued"
+    error, listed = s.tool("looma_comfy_runs")
+    assert not error and len(listed["runs"]) == 2
+    error, cancelled = s.tool("looma_comfy_runs", id=queued["id"], cancel=True)
+    assert not error and cancelled["status"] == "cancelled"
+
+
+def test_agent_fills_editor_weights_and_runs_without_listing_them(session, monkeypatch):
+    """Агент кладёт файл в веса редактора, и прогон без весов его находит."""
+    s, state, tmp = session
+    monkeypatch.setattr("loomafloat.client.time.sleep", lambda sec: None)
+    s.request("initialize", {"protocolVersion": "2025-03-26"})
+    assert "looma_comfy_weights" in {t["name"] for t in s.request("tools/list")["result"]["tools"]}
+    error, text = s.tool("looma_comfy_weights", action="add", ref="stabilityai/sdxl/sdxl.safetensors")
+    assert error and "folder" in text
+    error, made = s.tool("looma_comfy_weights", action="add", ref="stabilityai/sdxl/sdxl.safetensors",
+                         folder="checkpoints")
+    assert not error and made["name"] == "stabilityai/sdxl/sdxl.safetensors"
+    error, listed = s.tool("looma_comfy_weights")
+    assert not error and [w["name"] for w in listed["mine"]] == ["stabilityai/sdxl/sdxl.safetensors"]
+    assert listed["platform"][0]["models"] == ["comfy-sdxl"]
+    graph = tmp / "workflow_api.json"
+    graph.write_text(json.dumps({"4": {"class_type": "CheckpointLoaderSimple",
+                                       "inputs": {"ckpt_name": "sdxl.safetensors"}}}))
+    error, done = s.tool("looma_comfy_run", graph=str(graph), out=str(tmp / "out"))
+    assert not error and done["status"] == "completed"
+    assert "weights" not in state.run_requests[-1], "веса не названы: их берёт площадка"
+    error, gone = s.tool("looma_comfy_weights", action="remove", ref="stabilityai/sdxl/sdxl.safetensors")
+    assert not error and gone["removed"] is True

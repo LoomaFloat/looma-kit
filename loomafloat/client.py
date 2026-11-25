@@ -30,7 +30,7 @@ import struct
 import time
 import urllib.parse
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional, Union
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Union
 
 from loomafloat import config
 from loomafloat.http import LoomaError, get_json, open_stream, request, send_json
@@ -649,6 +649,86 @@ class Comfy:
         папками весов."""
         return (get_json(self.looma.url("/api/comfyui/extensions"), key=self.looma.key)
                 or {}).get("extensions") or []
+
+    # ----------------------------------------------- прогоны графа без модели
+    def run(self, graph: dict, *, weights: Optional[list] = None, description: str = "",
+            files: Optional[Dict[str, str]] = None) -> dict:
+        """Прогнать граф на общей реплике площадки, не заводя модель. Веса —
+        списком `{folder, repo, file}` или из описания модели (`description`,
+        текст `*.comfy.yaml`); `files` — входные файлы по именам, которые граф
+        грузит (base64). Ответ — прогон в очереди: `wait_run` дождётся."""
+        body: dict = {"graph": graph, "files": files or {}}
+        if weights is not None:
+            body["weights"] = weights
+        if description:
+            body["description"] = description
+        return send_json("POST", self.looma.url("/api/comfyui/runs"), body, key=self.looma.key,
+                         timeout=120)
+
+    def runs(self, limit: int = 20) -> list:
+        return (get_json(self.looma.url(f"/api/comfyui/runs?limit={int(limit)}"),
+                         key=self.looma.key) or {}).get("runs") or []
+
+    def run_status(self, run_id: str) -> dict:
+        return get_json(self.looma.url(f"/api/comfyui/runs/{_q(run_id)}"), key=self.looma.key)
+
+    def cancel_run(self, run_id: str) -> dict:
+        return send_json("POST", self.looma.url(f"/api/comfyui/runs/{_q(run_id)}/cancel"),
+                         key=self.looma.key)
+
+    # ----------------------------------------------- редактор
+    def editor(self) -> dict:
+        """Билет на вход в редактор ComfyUI площадки: `{url, expires_in}`.
+        Адрес годится один раз и пару минут: его открывают в браузере."""
+        return send_json("POST", self.looma.url("/api/comfyui/editor"), {}, key=self.looma.key)
+
+    # ----------------------------------------------- веса редактора
+    def weights(self) -> dict:
+        """Веса редактора: свои файлы (`mine`) и общий список площадки
+        (`platform`, веса открытых моделей ComfyUI). Прогон без списка весов
+        берёт файлы загрузчиков отсюда."""
+        return get_json(self.looma.url("/api/comfyui/weights"), key=self.looma.key) or {}
+
+    def add_weight(self, ref: str, folder: str, *, revision: str = "") -> dict:
+        """Добавить файл `владелец/репозиторий/путь` в папку ComfyUI (`folder`):
+        площадка проверит его по правилам весов модели и закрепит коммитом.
+        Уже добавленный — закрепит заново (без `revision` — на последний коммит)."""
+        body = {"ref": ref, "folder": folder, **({"revision": revision} if revision else {})}
+        return send_json("POST", self.looma.url("/api/comfyui/weights"), body,
+                         key=self.looma.key, timeout=120)
+
+    def remove_weight(self, ref) -> dict:
+        """Убрать файл из весов редактора: номер или `владелец/репозиторий/путь`."""
+        path = urllib.parse.quote(str(ref), safe="/")
+        return send_json("DELETE", self.looma.url(f"/api/comfyui/weights/{path}"),
+                         key=self.looma.key)
+
+    def run_graph(self, run_id: str) -> dict:
+        """Граф прогона, как его прислали (из редактора, kit, API): с него
+        делают модель — `looma comfy inspect run_… --write имя.comfy.yaml`."""
+        return get_json(self.looma.url(f"/api/comfyui/runs/{_q(run_id)}/graph"), key=self.looma.key)
+
+    def output(self, run_id: str, index: int) -> bytes:
+        """Файл прогона по номеру (`outputs[].index`)."""
+        return self.looma.download(f"/api/comfyui/runs/{_q(run_id)}/outputs/{int(index)}")
+
+    def wait_run(self, run_id: str, *, on_change: Optional[Callable[[dict], None]] = None,
+                 poll_s: float = 2.0, timeout_s: float = 3600.0) -> dict:
+        """Ждать конца прогона; `on_change` слышит каждое новое состояние."""
+        deadline = time.monotonic() + timeout_s
+        last = None
+        while True:
+            doc = self.run_status(run_id)
+            seen = (doc.get("status"), doc.get("stage"), json.dumps(doc.get("at")),
+                    doc.get("phase"))
+            if seen != last and on_change is not None:
+                on_change(doc)
+            last = seen
+            if doc.get("status") in ("completed", "failed", "cancelled"):
+                return doc
+            if time.monotonic() > deadline:
+                return doc
+            time.sleep(poll_s)
 
 
 class Engines:

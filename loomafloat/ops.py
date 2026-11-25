@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path, PurePosixPath
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 from loomafloat.client import Looma
 from loomafloat.http import LoomaError
@@ -464,6 +464,15 @@ def read_comfy(path) -> dict:
     return {"engine": "comfyui", "description": text, "graph": graph}
 
 
+def read_comfy_text(path) -> str:
+    """Текст описания модели на ComfyUI: из него прогону нужны веса."""
+    path = Path(path)
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise EntryError(f"описание {path} не прочитать: {exc.strerror or exc}") from None
+
+
 def _flow(value) -> str:
     """Значение описания в строку YAML: словарь и список — в одну строку, строки —
     в кавычках JSON (их YAML читает так же)."""
@@ -478,8 +487,9 @@ def comfy_yaml(report: dict, graph_file: str) -> str:
     """Черновик описания модели из разбора графа (`looma comfy inspect --write`)."""
     draft = report.get("draft") or {}
     lines = ["# Описание модели на ComfyUI для Looma Float (looma comfy inspect).",
-             "# Проверьте выход и входы; у каждого веса назовите repo: открытый репозиторий",
-             "# HuggingFace, файл в safetensors. Добавить: looma model add <имя> --from <этот файл>",
+             "# Проверьте выход и входы; у весов с пустым repo назовите его: открытый",
+             "# репозиторий HuggingFace, файл в safetensors (файлы из весов редактора уже",
+             "# заполнены). Добавить: looma model add <имя> --from <этот файл>",
              f"graph: {_flow(graph_file)}"]
     if draft.get("extensions"):
         lines.append("# наборы узлов площадки, которыми граф пользуется")
@@ -527,8 +537,9 @@ def inspect_lines(report: dict) -> list:
         media = {"image": "изображение", "video": "видео"}.get(out.get("media"), "не результат")
         lines.append(f"выход: узел {out['node']} ({out['class_type']}, {media})")
     for item in report.get("weights") or []:
+        found = f", из весов редактора: {item['repo']}/{item['file']}" if item.get("repo") else ""
         lines.append(f"вес: {item['folder']}/{item['name']} (узел {item['node']} "
-                     f"{item['class_type']}, поле {item['field']})")
+                     f"{item['class_type']}, поле {item['field']}{found})")
     for name, about in (report.get("inputs") or {}).items():
         where = about.get("field") or "/".join(about.get("fields") or [])
         lines.append(f"вход {name}: узел {about['node']}, поле {where} ({about['type']})")
@@ -537,6 +548,144 @@ def inspect_lines(report: dict) -> list:
     for problem in report.get("problems") or []:
         lines.append(f"поправить: {problem}")
     return lines
+
+
+# ------------------------------------------- прогоны графа без модели
+#: Узлы ядра, которые грузят входной файл по имени: такой файл едет с прогоном.
+RUN_INPUTS = {"LoadImage": ("image",), "LoadImageMask": ("image",), "LoadVideo": ("file",),
+              "LoadAudio": ("audio",)}
+MAX_RUN_FILE_BYTES = 32 * 1024 * 1024
+RUN_STATES = {"queued": "в очереди", "in_progress": "идёт", "completed": "готово",
+              "failed": "не вышло", "cancelled": "снято"}
+
+
+def run_files(graph: dict, base: Path, named: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Входные файлы прогона (имя в графе → base64): названные явно (`--file
+    имя=путь`) и те, что узлы ядра грузят по имени и что лежат рядом с графом."""
+    import base64
+
+    paths = {name: Path(path) for name, path in (named or {}).items()}
+    for node in graph.values():
+        if not isinstance(node, dict):
+            continue
+        for key in RUN_INPUTS.get(str(node.get("class_type")), ()):
+            value = (node.get("inputs") or {}).get(key)
+            if isinstance(value, str) and value not in paths and "/" not in value \
+                    and (Path(base) / value).is_file():
+                paths[value] = Path(base) / value
+    out = {}
+    for name, path in paths.items():
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise EntryError(f"файл {path} не прочитать: {exc.strerror or exc}") from None
+        if len(data) > MAX_RUN_FILE_BYTES:
+            raise EntryError(f"файл {path.name} больше {MAX_RUN_FILE_BYTES // 2**20} МБ")
+        out[name] = base64.b64encode(data).decode()
+    return out
+
+
+def run_state(doc: dict, graph: Optional[dict] = None) -> str:
+    """Где прогон сейчас, одной строкой."""
+    status = doc.get("status") or ""
+    if status == "queued":
+        if doc.get("stage") == "own_run":
+            return "в очереди: ждёт, пока идёт ваш прошлый прогон"
+        return "в очереди: реплика прогонов занята или поднимается"
+    if status == "in_progress":
+        if doc.get("phase"):
+            return doc["phase"]
+        at = doc.get("at") or {}
+        if at.get("node"):
+            kind = ((graph or {}).get(str(at["node"])) or {}).get("class_type")
+            where = f"узел {at['node']}" + (f" ({kind})" if kind else "")
+            step = f", шаг {at['value']} из {at['max']}" if at.get("max") else ""
+            return f"{where}{step}"
+        return "идёт" if doc.get("stage") != "weights" else "качаю веса"
+    if status == "completed":
+        took = (doc.get("timings") or {}).get("total_s")
+        return f"готово{f' за {took:.0f} с' if isinstance(took, (int, float)) else ''}: " \
+               f"файлов {len(doc.get('outputs') or [])}"
+    if status == "failed":
+        return f"не вышло: {(doc.get('error') or {}).get('message') or 'без причины'}"
+    return RUN_STATES.get(status, status)
+
+
+RUN_ID = re.compile(r"^run_[0-9a-f]{8,64}$")
+
+
+def graph_source(looma, ref: str, write: str = "") -> Tuple[dict, Optional[Path]]:
+    """Граф для разбора: файл или номер прогона (`run_…`, граф берётся с
+    площадки). С `write` граф прогона ложится файлом рядом с черновиком
+    описания (`run_….json`): описание ссылается на него. Ответ: граф и путь
+    к файлу графа (у прогона без `write` — None)."""
+    if RUN_ID.match(ref or "") and not Path(ref).exists():
+        graph = looma.comfy.run_graph(ref)
+        if not write:
+            return graph, None
+        target = Path(write).resolve().parent / f"{ref}.json"
+        text = json.dumps(graph, ensure_ascii=False, indent=1) + "\n"
+        if target.exists() and target.read_text(encoding="utf-8") != text:
+            raise OpError(f"{target} уже есть и это другой граф: черновик не перезаписывает файл")
+        target.write_text(text, encoding="utf-8")
+        return graph, target
+    return read_graph(ref), Path(ref)
+
+
+def size_text(size) -> str:
+    size = int(size or 0)
+    return f"{size / 2 ** 30:.1f} ГиБ" if size >= 2 ** 30 else f"{max(1, size // 2 ** 20)} МБ"
+
+
+def weights_lines(doc: dict) -> list:
+    """Веса редактора строками (`looma comfy weights`)."""
+    mine, shared = doc.get("mine") or [], doc.get("platform") or []
+    lines = [f"свои веса: {len(mine)} из {doc.get('limit') or 100}"]
+    if not mine:
+        lines.append("  пока нет: `looma comfy weights add владелец/репозиторий/файл "
+                     "--folder checkpoints`")
+    for item in mine:
+        lines.append(f"  {item['id']}  {item['folder']}  {item['name']}  {size_text(item.get('size'))}"
+                     f"  коммит {str(item.get('revision') or '')[:8]}")
+    lines.append("веса площадки (из открытых моделей ComfyUI): "
+                 + (str(len(shared)) if shared else "пока нет"))
+    for item in shared:
+        lines.append(f"  {item['folder']}  {item['name']}  {size_text(item.get('size'))}"
+                     f"  ({', '.join(item.get('models') or [])})")
+    if mine or shared:
+        lines.append("в графе файл называют так, как в списке (владелец/репозиторий/файл), или "
+                     "только именем файла, если оно одно; прогон без --weights берёт их отсюда")
+    return lines
+
+
+def run_lines(doc: dict) -> list:
+    """Прогон строками (`looma comfy runs <номер>`)."""
+    lines = [f"{doc['id']}: {run_state(doc)}"]
+    if doc.get("extensions"):
+        lines.append(f"  наборы узлов: {', '.join(doc['extensions'])}")
+    if doc.get("graph"):
+        lines.append(f"  граф: {doc['graph']}")
+    for item in doc.get("outputs") or []:
+        where = "просмотр" if item.get("type") == "temp" else "результат"
+        lines.append(f"  файл {item['index']}: узел {item.get('node')}, {item.get('filename')} "
+                     f"({where}, {int(item.get('bytes') or 0) // 1024} КБ)")
+    for node, values in (doc.get("ui") or {}).items():
+        for key, value in values.items():
+            lines.append(f"  узел {node}, {key}: {json.dumps(value, ensure_ascii=False)[:300]}")
+    return lines
+
+
+def save_run(looma, doc: dict, out: Path) -> list:
+    """Файлы прогона в папку `out`: `<номер>_<узел>_<имя>`."""
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for item in doc.get("outputs") or []:
+        name = Path(str(item.get("filename") or f"file{item['index']}")).name
+        target = out / f"{item['index']}_{item.get('node')}_{name}"
+        target.write_bytes(looma.comfy.output(doc["id"], item["index"]))
+        saved.append(target)
+    return saved
 
 
 # --------------------------------------------------------------- движки

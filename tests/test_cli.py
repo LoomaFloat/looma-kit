@@ -726,6 +726,7 @@ def test_comfyui_graph_from_inspect_to_a_model(api, capsys, tmp_path):
     assert code == 0, err
     assert "выход: узел 9 (SaveImage, изображение)" in out
     assert "вес: checkpoints/sdxl.safetensors" in out and "род модели: image" in out
+    assert "Допишите repo у sdxl.safetensors, проверьте входы" in out
     text = described.read_text(encoding="utf-8")
     assert 'graph: "workflow_api.json"' in text and 'output: {node: "9"}' in text
     assert '  prompt: {node: "6", field: "text", type: "text"}' in text
@@ -782,6 +783,133 @@ def test_comfyui_node_sets(api, capsys, tmp_path):
     assert 'extensions: ["looma-sets/kjnodes"]' in described.read_text(encoding="utf-8")
     code, _out, err = run(capsys, "comfy", "inspect")
     assert code == 1 and "нужен граф" in err
+
+
+def test_comfyui_graph_runs_without_a_model(api, capsys, tmp_path, monkeypatch):
+    """Граф прогоняется на площадке без модели: веса из описания, входной файл
+    рядом с графом едет сам, ход печатается, файлы прогона сохраняются."""
+    base, state = api
+    login(base, capsys)
+    monkeypatch.setattr("loomafloat.client.time.sleep", lambda s: None)
+    graph = tmp_path / "workflow_api.json"
+    graph.write_text(json.dumps({**GRAPH, "12": {"class_type": "LoadImage",
+                                                 "inputs": {"image": "cat.png"}}}),
+                     encoding="utf-8")
+    code, _out, err = run(capsys, "comfy", "run", str(graph))
+    assert code == 1 and "sdxl.safetensors" in err and "weights" in err
+    described = tmp_path / "portrait.comfy.yaml"
+    described.write_text("graph: workflow_api.json\nweights:\n  - {folder: checkpoints, "
+                         "repo: stabilityai/sdxl, file: sdxl.safetensors}\n", encoding="utf-8")
+    code, _out, err = run(capsys, "comfy", "run", str(graph), "--weights", str(described))
+    assert code == 1 and "cat.png" in err, "файла рядом нет — площадка называет, чего не хватает"
+    (tmp_path / "cat.png").write_bytes(b"\x89PNG cat")
+    out_dir = tmp_path / "out"
+    code, out, err = run(capsys, "comfy", "run", str(described), "--out", str(out_dir))
+    assert code == 0, err
+    sent = state.run_requests[-1]
+    assert sent["description"].startswith("graph: workflow_api.json")
+    assert list(sent["files"]) == ["cat.png"] and "входные файлы: cat.png" in out
+    assert "узел 3, шаг 5 из 20" in out and "готово за 4 с: файлов 2" in out
+    assert out.count("в очереди") == 1, "та же строка хода второй раз не печатается"
+    saved = sorted(p.name for p in out_dir.iterdir())
+    assert saved == ["0_9_ComfyUI_0.png", "1_15_prev.png"]
+    assert (out_dir / "0_9_ComfyUI_0.png").read_bytes().startswith(b"PNG:/files/run_")
+    assert "узел 14, text: [\"готово\"]" in out
+    code, out, err = run(capsys, "comfy", "runs")
+    assert code == 0 and "готово" in out
+    run_id = out.split()[0]
+    code, out, err = run(capsys, "comfy", "runs", run_id)
+    assert code == 0 and "файл 1: узел 15, prev.png (просмотр, 1 КБ)" in out
+    code, out, err = run(capsys, "comfy", "run", str(described), "--no-wait")
+    assert code == 0 and "looma comfy runs run_" in out
+    queued = __import__("re").search(r"run_\d+", out).group(0)
+    code, out, err = run(capsys, "comfy", "cancel", queued)
+    assert code == 0 and "снято" in out
+
+
+def test_editor_weights_feed_runs_without_weights(api, capsys, tmp_path, monkeypatch):
+    """Веса редактора: файл добавляется с папкой, виден в списке вместе с весами
+    площадки, прогон без --weights его находит, убирается по имени."""
+    base, state = api
+    login(base, capsys)
+    monkeypatch.setattr("loomafloat.client.time.sleep", lambda s: None)
+    code, out, _err = run(capsys, "comfy", "weights")
+    assert code == 0 and "свои веса: 0 из 100" in out and "looma/vae/sdxl_vae.safetensors" in out
+    code, _out, err = run(capsys, "comfy", "weights", "add", "stabilityai/sdxl/sdxl.safetensors")
+    assert code == 1 and "--folder" in err
+    code, out, _err = run(capsys, "comfy", "weights", "add", "stabilityai/sdxl/sdxl.safetensors",
+                          "--folder", "checkpoints")
+    assert code == 0 and "stabilityai/sdxl/sdxl.safetensors добавлен: checkpoints" in out
+    code, out, _err = run(capsys, "comfy", "weights", "add", "stabilityai/sdxl/sdxl.safetensors",
+                          "--folder", "checkpoints", "--revision", "e" * 40)
+    assert code == 0 and "закреплён заново" in out and "коммит eeeeeeee" in out
+    code, out, _err = run(capsys, "comfy", "weights")
+    assert "свои веса: 1 из 100" in out and "1  checkpoints  stabilityai/sdxl/sdxl.safetensors" in out
+    graph = tmp_path / "workflow_api.json"
+    graph.write_text(json.dumps(GRAPH), encoding="utf-8")
+    code, out, err = run(capsys, "comfy", "run", str(graph), "--out", str(tmp_path / "out"))
+    assert code == 0, err
+    assert "weights" not in state.run_requests[-1] and "готово" in out
+    code, out, _err = run(capsys, "comfy", "weights", "rm", "stabilityai/sdxl/sdxl.safetensors")
+    assert code == 0 and "убран" in out
+    code, _out, err = run(capsys, "comfy", "run", str(graph))
+    assert code == 1 and "ни в весах редактора" in err
+
+
+def test_successful_run_becomes_a_model_draft(api, capsys, tmp_path, monkeypatch):
+    """`looma comfy inspect run_…`: граф прогона с площадки ложится рядом с
+    черновиком описания, описание ссылается на него."""
+    base, state = api
+    login(base, capsys)
+    monkeypatch.setattr("loomafloat.client.time.sleep", lambda s: None)
+    run(capsys, "comfy", "weights", "add", "stabilityai/sdxl/sdxl.safetensors", "--folder", "checkpoints")
+    graph = tmp_path / "workflow_api.json"
+    graph.write_text(json.dumps(GRAPH), encoding="utf-8")
+    code, out, err = run(capsys, "comfy", "run", str(graph), "--no-wait")
+    assert code == 0, err
+    run_id = __import__("re").search(r"run_\d+", out).group(0)
+    described = tmp_path / "drafts" / "fox.comfy.yaml"
+    described.parent.mkdir()
+    code, out, err = run(capsys, "comfy", "inspect", run_id, "--write", str(described))
+    assert code == 0, err
+    saved = described.parent / f"{run_id}.json"
+    assert json.loads(saved.read_text(encoding="utf-8")) == GRAPH
+    assert f'graph: "{run_id}.json"' in described.read_text(encoding="utf-8")
+    code, _out, err = run(capsys, "comfy", "inspect", run_id, "--write", str(described))
+    assert code == 1 and "не перезаписывает" in err
+
+
+def test_editor_opens_with_a_one_time_address(api, capsys, monkeypatch):
+    """`looma comfy editor` берёт билет и открывает редактор; --no-wait — только адрес."""
+    base, _state = api
+    login(base, capsys)
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
+    code, out, _err = run(capsys, "comfy", "editor")
+    assert code == 0 and opened == ["https://comfyui.apps.example.ru/login?ticket=t1"]
+    assert "открыт в браузере" in out
+    code, out, _err = run(capsys, "comfy", "editor", "--no-wait")
+    assert code == 0 and len(opened) == 1 and "login?ticket=t1" in out and "один раз" in out
+
+
+def test_submitted_node_set_goes_into_the_graph_description(api, capsys, tmp_path):
+    """Набор узлов ComfyUI подключают строкой extensions в описании графа, а не
+    флагом --engine, как движок."""
+    base, state = api
+    login(base, capsys)
+    state.handle = "anna"
+    folder = tmp_path / "kjnodes"
+    (folder / "comfyui_kjnodes").mkdir(parents=True)
+    (folder / "comfyui_kjnodes" / "__init__.py").write_text("NODE_CLASS_MAPPINGS = {}\n")
+    (folder / "looma-extension.yaml").write_text(
+        "name: kjnodes\ntitle: KJNodes\nextends: comfyui\npackage: comfyui_kjnodes\n"
+        "comfyui:\n  nodes: [A]\n", encoding="utf-8")
+    code, out, err = run(capsys, "engine", "submit", str(folder), "--extension")
+    assert code == 0, err
+    assert "extensions: [anna/kjnodes]" in out and "--engine" not in out
+    code, out, err = run(capsys, "engine", "try", str(folder))
+    assert code == 0, err
+    assert "без ревью" in out and "extensions: [anna/kjnodes]" in out
 
 
 def test_node_set_folder_may_be_bigger_than_an_engine(tmp_path, monkeypatch):

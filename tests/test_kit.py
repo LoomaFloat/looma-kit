@@ -379,3 +379,16 @@ def test_mcp_print_config_names_every_agent(capsys):
 def test_cli_parser_knows_the_new_commands():
     actions = cli.parser()._subparsers._group_actions[0].choices
     assert {"assess", "validate", "models", "check", "skill"} <= set(actions)
+
+
+def test_comfyui_run_states_read_plainly():
+    """Строка хода прогона: своя очередь автора отличается от занятой реплики."""
+    assert ops.run_state({"status": "queued", "stage": "queue"}) \
+        == "в очереди: реплика прогонов занята или поднимается"
+    assert ops.run_state({"status": "queued", "stage": "own_run"}) \
+        == "в очереди: ждёт, пока идёт ваш прошлый прогон"
+    graph = {"3": {"class_type": "KSampler", "inputs": {}}}
+    assert ops.run_state({"status": "in_progress", "at": {"node": "3", "value": 5, "max": 20}},
+                         graph) == "узел 3 (KSampler), шаг 5 из 20"
+    assert ops.run_state({"status": "in_progress", "phase": "качаю веса 1 из 2: a/b"}) \
+        == "качаю веса 1 из 2: a/b"
