@@ -120,6 +120,10 @@ def make_handler(state: State):
                 state.dev_calls += 1
             elif self.headers.get("Authorization") != f"Bearer {KEY}":
                 return self._error(401, "нужно войти")
+            if self.headers.get("X-Looma-Account-Key"):
+                # Сервис с ключом человека: что пришло, помнит тест SDK.
+                state.__dict__.setdefault("persons", []).append(
+                    (method, path, self.headers.get("X-Looma-Account-Key")))
             with state.lock:
                 return self._dispatch(method, path, query, body)
 
@@ -328,6 +332,24 @@ def make_handler(state: State):
         def _dispatch(self, method, path, query, body):
             if path == "/api/nodes" or path.startswith("/api/nodes/"):
                 return self._nodes(method, path, body)
+            if path.startswith("/v1/jobs/cmp_"):
+                runs = state.__dict__.setdefault("computes", {})
+                run_id = path.split("/")[3]
+                item = runs.get(run_id)
+                if item is None:
+                    return self._error(404, "нет")
+                if path.endswith("/content"):
+                    out = json.dumps({"output": "ПРИВЕТ"}, ensure_ascii=False).encode()
+                    return self._send(200, raw=out, kind="application/json")
+                item["polls"] += 1
+                if item["polls"] >= 2:
+                    item.update(status="succeeded", result={
+                        "status": 200, "bytes": 20, "content_type": "application/json",
+                        "url": f"/v1/runs/{run_id}/content"})
+                else:
+                    item["status"] = "running"
+                return self._send(200, {k: v for k, v in item.items()
+                                        if k not in ("polls", "body")})
             if path.startswith(("/v1/run/", "/v1/jobs/")):
                 return self._run(method, path, body)
             if path == "/v1/income":
@@ -360,6 +382,46 @@ def make_handler(state: State):
                                         "expires_in": 120})
             if path == "/api/comfyui/weights" or path.startswith("/api/comfyui/weights/"):
                 return self._editor_weights(method, path, body)
+            if path == "/api/weights" or path.startswith("/api/weights/"):
+                return self._weights(method, path, body)
+            if path == "/api/recipes" or path.startswith("/api/recipes/"):
+                return self._recipes(method, path, body)
+            if path == "/api/market/consents" or path.startswith("/api/market/consents/"):
+                consents = state.__dict__.setdefault("consents", {7: {
+                    "id": 7, "slug": "curator", "app": "curator", "title": "Куратор рецептов",
+                    "rights": [{"name": "catalog.draft", "title": "Заводить черновики"}],
+                    "granted_at": 1795600000, "last_used_at": None}})
+                if method == "GET":
+                    return self._send(200, {"object": "list", "data": list(consents.values())})
+                found = path.rsplit("/", 1)[-1]
+                if method == "DELETE" and found.isdigit() and int(found) in consents:
+                    consents.pop(int(found))
+                    return self._send(200, {"revoked": int(found)})
+                return self._error(404, "такого доступа нет или он уже отозван")
+            if path == "/v1/files" and method == "POST":
+                uploads = state.__dict__.setdefault("uploads", [])
+                uploads.append(body)
+                return self._send(200, {"id": f"file-{len(uploads)}", "object": "file",
+                                        "bytes": len(body), "status": "ready"})
+            if path == "/v1/runs" and method == "POST":
+                doc = json.loads(body)
+                if doc.get("engine") != "bob/echo":
+                    return self._error(409, f"движок {doc.get('engine')} рецепт в запросе не "
+                                            "принимает")
+                runs = state.__dict__.setdefault("computes", {})
+                run_id = f"cmp_{len(runs) + 1}"
+                runs[run_id] = {"id": run_id, "object": "job", "type": "compute",
+                                "status": "queued", "progress": None, "created_at": 1,
+                                "error": "", "result": None, "polls": 0, "body": doc,
+                                "detail": {"engine": "bob/echo", "engine_version": 2,
+                                           "recipe_ref": doc.get("recipe_ref")}}
+                return self._send(200, {k: v for k, v in runs[run_id].items()
+                                        if k not in ("polls", "body")})
+            if path == "/v1/runs" and method == "GET":
+                runs = state.__dict__.setdefault("computes", {})
+                return self._send(200, {"object": "list", "data": [
+                    {k: v for k, v in r.items() if k not in ("polls", "body")}
+                    for r in runs.values()]})
             if path == "/api/comfyui/inspect":
                 graph = (json.loads(body) or {}).get("graph") or {}
                 if "nodes" in graph and "links" in graph:
@@ -647,6 +709,118 @@ def make_handler(state: State):
                             "instance": 0, "release": app["prod_release"], "state": "running",
                             "restarts": 0, "last_exit": ""})
             return out
+
+        def _recipes(self, method, path, body):
+            """Рецепты: `/api/recipes` как у оркестратора. Открытый рецепт Боба
+            есть всегда; открыть свой — проверка площадки (pending)."""
+            mine = state.__dict__.setdefault("recipes", {})
+            bob = {"ref": "bob/tone", "name": "tone", "author": "bob", "kind": "preset",
+                   "on": "chat-model", "base": "chat-model", "preset": {"system": "Громко"},
+                   "summary": "Громкий тон", "visibility": "public", "status": "approved",
+                   "version": 1, "mine": False, "models": [], "used_by": 3}
+            parts = [p for p in path.split("/") if p][2:]
+            ref = "/".join(parts[:2])
+            tail = parts[2] if len(parts) > 2 else ""
+            doc = json.loads(body) if body else {}
+            if not parts:
+                if method == "GET":
+                    return self._send(200, {"mine": list(mine.values()), "open": [bob],
+                                            "handle": state.handle})
+                if not state.handle:
+                    return self._error(409, "сначала задайте имя автора")
+                full = f"{state.handle}/{doc['name']}"
+                before = mine.get(full)
+                content = doc.get("preset") if doc.get("kind") == "preset" else doc.get("fields")
+                same = before and (before.get("preset") if before["kind"] == "preset"
+                                   else before.get("fields")) == content
+                mine[full] = {**(before or {}), "ref": full, "name": doc["name"],
+                              "author": state.handle, "kind": doc.get("kind"),
+                              "on": doc.get("base") or doc.get("engine"),
+                              doc.get("kind"): content, "summary": doc.get("summary", ""),
+                              "visibility": (before or {}).get("visibility", "private"),
+                              "status": "draft", "mine": True, "models": [], "used_by": 0,
+                              "version": (before["version"] if same else before["version"] + 1)
+                              if before else 1}
+                return self._send(200, mine[full])
+            if ref == "bob/tone":
+                if tail == "copy":
+                    full = f"{state.handle}/{doc.get('name') or 'tone'}"
+                    mine[full] = {**bob, "ref": full, "author": state.handle, "mine": True,
+                                  "visibility": "private", "status": "draft",
+                                  "based_on": {"ref": "bob/tone", "version": 1}}
+                    return self._send(200, mine[full])
+                return self._send(200, bob)
+            item = mine.get(ref)
+            if item is None:
+                return self._error(404, f"рецепта {ref} у вас нет")
+            if tail == "publish":
+                item["status"] = "pending"
+            elif tail == "unpublish":
+                item.update(visibility="private", status="draft")
+            elif method == "DELETE":
+                mine.pop(ref)
+                return self._send(200, {"ref": ref, "removed": True, "used_by": 0})
+            return self._send(200, {**item, "versions": [
+                {"number": item["version"], "status": item["status"], "note": "",
+                 "created_at": 1}]})
+
+        def _weights(self, method, path, body):
+            """Записи весов: `/api/weights` как у оркестратора. Коммит — `c…`,
+            названный коммит берётся как есть; файл не в safetensors — отказ."""
+            records = state.__dict__.setdefault("weights", {})
+            ref = path[len("/api/weights/"):] if path.startswith("/api/weights/") else ""
+            if method == "GET" and ref == "choices":
+                return self._send(200, {"weights": [w for w in records.values() if w["whole"]]})
+            if method == "GET" and not ref:
+                return self._send(200, {"mine": list(records.values()), "open": [
+                    {"ref": "bob/whisper", "name": "whisper", "author": "bob", "repo": "bob/whisper-ru",
+                     "whole": True, "files": [], "bytes": 2 ** 30, "used_by": 2, "version": 1,
+                     "revision": "b" * 40, "visibility": "public", "mine": False}],
+                    "adapters": [], "limit": 100, "max_gib": 100, "handle": state.handle})
+            if method == "POST":
+                if not state.handle:
+                    return self._error(409, "сначала задайте имя автора: записи весов зовутся "
+                                            "`автор/веса`")
+                doc = json.loads(body)
+                parts = str(doc.get("ref") or "").split("/")
+                files = "/".join(parts[2:])
+                if files and not files.endswith(".safetensors"):
+                    return self._error(400, f"файл {files!r}: веса принимаются только в "
+                                            "safetensors")
+                name = doc.get("name") or parts[1]
+                full = f"{state.handle}/{name}"
+                revision = doc.get("revision") or "c" * 40
+                before = records.get(full)
+                again = bool(before) and before["revision"] == revision
+                version = (before["version"] if again else before["version"] + 1) \
+                    if before else 1
+                records[full] = {
+                    "ref": full, "name": name, "author": state.handle, "summary": doc.get(
+                        "summary", ""), "repo": "/".join(parts[:2]), "revision": revision,
+                    "whole": not files, "bytes": 2 ** 30 * 3, "version": version,
+                    "files": [{"path": files, "size": 2 ** 27,
+                               **({"folder": doc["folder"]} if doc.get("folder") else {})}]
+                    if files else [{"path": "model.safetensors", "size": 2 ** 30 * 3}],
+                    "visibility": "public" if doc.get("open") else (
+                        before or {}).get("visibility", "private"),
+                    "mine": True, "models": [], "used_by": 0, "closed": ""}
+                return self._send(200, {**records[full], "new_version": not again})
+            item = records.get(ref)
+            if item is None:
+                return self._error(404, f"записи весов {ref} у вас нет")
+            if method == "GET":
+                return self._send(200, {**item, "versions": [
+                    {"number": item["version"], "revision": item["revision"],
+                     "bytes": item["bytes"], "status": "approved", "pinned_at": 1}]})
+            if method == "PATCH":
+                doc = json.loads(body)
+                if "open" in doc:
+                    item["visibility"] = "public" if doc["open"] else "private"
+                return self._send(200, item)
+            if method == "DELETE":
+                records.pop(ref)
+                return self._send(200, {"ref": ref, "removed": True, "used_by": 1})
+            return self._error(405, "нет такого метода")
 
         def _editor_weights(self, method, path, body):
             """Веса редактора: `/api/comfyui/weights` как у оркестратора."""

@@ -940,3 +940,133 @@ def test_call_video_waits_and_saves(api, capsys, tmp_path):
     assert code == 0, err
     assert f"видео: {out}" in text and out.read_bytes()
     assert state.videos[-1][0]["model"] == "anna/gifs" and state.videos[-1][0]["prompt"] == "кот бежит"
+
+
+def test_weights_records_and_a_model_from_one(api, capsys):
+    """`looma weights`: запись весов закрепляет коммит, модель собирается из неё."""
+    base, state = api
+    login(base, capsys)
+    code, _out, err = run(capsys, "weights", "add", "anna/qwen-legal")
+    assert code == 1 and "имя автора" in err
+    state.handle = "anna"
+    code, out, err = run(capsys, "weights", "add", "https://huggingface.co/anna/qwen-legal",
+                         "--summary", "Юридические тексты")
+    assert code == 0, err
+    assert "anna/qwen-legal: anna/qwen-legal, 3.0 ГиБ, коммит cccccccc, версия 1" in out
+    assert "--weights anna/qwen-legal" in out
+    code, out, _err = run(capsys, "weights", "add", "anna/qwen-legal")
+    assert "коммит тот же, версия 1" in out
+    code, out, _err = run(capsys, "weights", "add", "anna/qwen-legal", "--revision", "e" * 40)
+    assert "версия 2" in out and "коммит eeeeeeee" in out
+    code, _out, err = run(capsys, "weights", "add", "anna/style/lora.ckpt")
+    assert code == 1 and "safetensors" in err
+    code, out, _err = run(capsys, "weights", "add", "anna/style/lora.safetensors",
+                          "--folder", "loras", "--name", "style")
+    assert code == 0 and "anna/style/lora.safetensors (папка loras)" in out
+    assert "--weights" not in out, "отдельный файл модели на движке не годится"
+    code, out, _err = run(capsys, "weights")
+    assert "свои веса: 2 из 100" in out and "anna/qwen-legal" in out and "видите только вы" in out
+    assert "открытые веса авторов: 1" in out and "bob/whisper" in out
+    code, out, _err = run(capsys, "weights", "open", "qwen-legal")
+    assert code == 0 and "anna/qwen-legal: открыта" in out
+    code, out, _err = run(capsys, "weights", "show", "qwen-legal")
+    assert "открыта авторам" in out and "версия 2: коммит eeeeeeeeeeee" in out
+    code, out, err = run(capsys, "model", "add", "legal", "--weights", "qwen-legal")
+    assert code == 0, err
+    sent = [c for c in state.calls if c[0] == "POST" and c[1] == "/api/services"]
+    assert json.loads(sent[-1][3])["weights"] == "anna/qwen-legal"
+    code, _out, err = run(capsys, "model", "add", "x", "--weights", "anna/qwen-legal",
+                          "--repo", "anna/qwen-legal")
+    assert code == 1 and "--repo" in err
+    code, out, _err = run(capsys, "weights", "rm", "anna/qwen-legal")
+    assert code == 0 and "работают дальше" in out
+
+
+def test_recipes_versions_copy_and_a_model(api, capsys, tmp_path):
+    """`looma recipe`: свой рецепт с версиями, копия открытого, модель из рецепта."""
+    base, state = api
+    login(base, capsys)
+    state.handle = "anna"
+    preset = tmp_path / "loud.json"
+    preset.write_text(json.dumps({"system": "Отвечай громко."}), encoding="utf-8")
+    code, _out, err = run(capsys, "recipe", "add", "loud", "--preset", str(preset))
+    assert code == 1 and "--base" in err
+    code, out, err = run(capsys, "recipe", "add", "loud", "--base", "chat-model",
+                         "--preset", str(preset))
+    assert code == 0, err
+    assert "anna/loud: версия 1, черновик" in out
+    preset.write_text(json.dumps({"system": "Ещё громче."}), encoding="utf-8")
+    code, out, _err = run(capsys, "recipe", "add", "loud", "--base", "chat-model",
+                          "--preset", str(preset))
+    assert "версия 2" in out
+    code, out, _err = run(capsys, "recipe")
+    assert "anna/loud  настройка поверх модели на chat-model  версия 2" in out
+    assert "открытые рецепты авторов: 1" in out and "bob/tone" in out
+    code, out, _err = run(capsys, "recipe", "copy", "bob/tone", "--name", "tone")
+    assert code == 0 and "anna/tone: копия bob/tone" in out
+    code, out, _err = run(capsys, "recipe", "show", "tone")
+    assert "основано на bob/tone, версия 1" in out
+    code, out, _err = run(capsys, "recipe", "publish", "loud")
+    assert "отправлен на проверку" in out
+    code, _out, err = run(capsys, "recipe", "model", "loud")
+    assert code == 1 and "--name" in err
+    code, out, err = run(capsys, "recipe", "model", "tone", "--name", "tone-bot")
+    assert code == 0, err
+    sent = [c for c in state.calls if c[0] == "POST" and c[1] == "/api/services"]
+    assert json.loads(sent[-1][3]) == {"name": "tone-bot", "recipe": "anna/tone"}
+    code, out, err = run(capsys, "model", "add", "loud-bot", "--recipe", "loud")
+    assert code == 0, err
+    sent = [c for c in state.calls if c[0] == "POST" and c[1] == "/api/services"]
+    assert json.loads(sent[-1][3])["recipe"] == "anna/loud"
+    code, out, _err = run(capsys, "recipe", "rm", "loud")
+    assert code == 0 and "anna/loud убран" in out
+
+
+def test_run_takes_the_recipe_in_the_request(api, capsys, tmp_path, monkeypatch):
+    """`looma run`: рецепт полями прямо в запросе, ответ движка в файл, подсказка модели."""
+    base, state = api
+    login(base, capsys)
+    monkeypatch.setattr("loomafloat.cli.time.sleep", lambda s: None)
+    code, _out, err = run(capsys, "run", "bob/other", "--set", "tone=loud")
+    assert code == 1 and "не принимает" in err
+    out_file = tmp_path / "answer.json"
+    code, out, err = run(capsys, "run", "bob/echo", "--set", "tone=loud", "--set", "repeat=2",
+                         "--input", "text=привет", "--out", str(out_file))
+    assert code == 0, err
+    sent = state.computes["cmp_1"]["body"]
+    assert sent == {"engine": "bob/echo", "recipe": {"tone": "loud", "repeat": 2},
+                    "inputs": {"text": "привет"}}
+    assert "прогон на движке bob/echo, версия 2" in out
+    assert json.loads(out_file.read_text(encoding="utf-8")) == {"output": "ПРИВЕТ"}
+    assert "looma model add <имя> --engine bob/echo --set tone=loud --set repeat=2" in out
+    code, out, _err = run(capsys, "run", "bob/echo", "--recipe", "bob/tone", "--no-wait")
+    assert code == 0 and "cmp_2: прогон на bob/echo принят" in out
+    assert state.computes["cmp_2"]["body"]["recipe_ref"] == "bob/tone"
+    code, _out, err = run(capsys, "run", "bob/echo", "--recipe", "bob/tone", "--set", "a=1")
+    assert code == 1 and "что-то одно" in err
+    picture = tmp_path / "cat.png"
+    picture.write_bytes(b"\x89PNGcat")
+    code, out, err = run(capsys, "run", "bob/echo", "--file", f"image={picture}", "--no-wait")
+    assert code == 0, err
+    assert state.computes["cmp_3"]["body"]["files"] == {"image": "file-1"}
+    assert b"\x89PNGcat" in state.uploads[0] and b'name="purpose"' in state.uploads[0]
+    code, _out, err = run(capsys, "run", "bob/echo", "--file", "image=нет.png")
+    assert code == 1 and "файла нет" in err
+    code, out, _err = run(capsys, "run")
+    assert "cmp_1: succeeded" in out and "cmp_2" in out
+
+
+def test_access_lists_and_revokes_service_accesses(api, capsys):
+    """Человек смотрит, каким сервисам разрешил действовать в каталоге, и отзывает."""
+    base, state = api
+    login(base, capsys)
+    code, out, err = run(capsys, "access")
+    assert code == 0, err
+    assert "Куратор рецептов (curator): черновики в каталоге" in out and "revoke" in out
+    code, _out, err = run(capsys, "access", "revoke")
+    assert code == 1 and "номер" in err
+    code, out, err = run(capsys, "access", "revoke", "7")
+    assert code == 0 and "со следующего запроса" in out, err
+    assert ("DELETE", "/api/market/consents/7") in [c[:2] for c in state.calls]
+    code, out, _err = run(capsys, "access")
+    assert "не действуют" in out

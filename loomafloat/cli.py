@@ -335,6 +335,227 @@ def cmd_comfy(args) -> None:
             f"затем `looma model check --from {target}`")
 
 
+def cmd_run(args) -> None:
+    """Разовое вычисление на движке: рецепт в запросе."""
+    looma = _looma(args)
+    try:
+        if not args.engine:
+            rows = looma.computes(limit=20)
+            if not rows:
+                say("прогонов нет: `looma run автор/движок --set поле=значение --input имя=значение`")
+            for doc in rows:
+                for line in ops.job_lines(doc):
+                    say(line)
+            return
+        if args.recipe and args.set:
+            raise Stop("рецепт полями (--set) или записью (--recipe): что-то одно")
+        recipe = ops.recipe_of(args.set) if args.set else None
+        job = looma.compute(args.engine.strip(), recipe=recipe,
+                            recipe_ref=ops.recipe_ref(looma, args.recipe) if args.recipe else "",
+                            inputs=ops.inputs_of(args.input, args.inputs or ""),
+                            files=ops.upload_files(looma, args.file), wait=False)
+        say(f"{job.id}: прогон на {args.engine} принят")
+        if args.no_wait:
+            say(f"дальше: `looma job {job.id} --wait` или `--out файл`")
+            return
+        last = None
+        while job.status not in job.DONE:
+            state = (job.status, job.progress)
+            if state != last:
+                say(f"{job.id}: {job.status}" + (f", {job.progress}%" if job.progress is not None
+                                                 else ""))
+                last = state
+            time.sleep(2)
+            job.refresh()
+        for line in ops.job_lines(job.doc):
+            say(line)
+        if (job.doc.get("result") or {}).get("url"):
+            _write_or_say(job.content(), args.out,
+                          (job.doc.get("result") or {}).get("content_type") or "")
+        if job.status == "succeeded":
+            tail = f" --recipe {args.recipe}" if args.recipe else "".join(
+                f" --set {k}={v}" for k, v in (recipe or {}).items())
+            say(f"модель на этом рецепте: `looma model add <имя> --engine {args.engine}{tail}`")
+    except (LoomaError, ops.OpError) as exc:
+        raise Stop(str(exc)) from None
+
+
+def cmd_recipe(args) -> None:
+    """Рецепты: список, show, add, copy, model, publish, unpublish, rm."""
+    looma = _looma(args)
+    action, ref = args.action, args.ref
+    try:
+        if action == "list":
+            doc = looma.recipes.view()
+            if args.json:
+                return say(json.dumps(doc, ensure_ascii=False, indent=2))
+            for line in ops.recipe_lines(doc):
+                say(line)
+            return
+        if not ref:
+            raise Stop(f"какой рецепт? looma recipe {action} "
+                       + ("<имя> --base <модель> --preset файл.json" if action == "add"
+                          else "автор/рецепт"))
+        if action == "add":
+            if bool(args.base) == bool(args.engine):
+                raise Stop("рецепт чего? --base <модель> --preset файл.json (настройка поверх "
+                           "модели) или --engine автор/движок --set поле=значение (поля движка)")
+            made = looma.recipes.add(ref, base=args.base or "",
+                                     preset=ops.read_preset(args.preset) if args.preset else None,
+                                     engine=args.engine or "",
+                                     fields=ops.recipe_of(args.set) if args.set else None,
+                                     summary=args.summary or "")
+            say(f"{made['ref']}: версия {made['version']}, черновик; модель: "
+                f"`looma recipe model {made['ref']} <имя>`")
+            return
+        full = ops.recipe_ref(looma, ref)
+        if action == "show":
+            doc = looma.recipes.get(full)
+            if args.json:
+                return say(json.dumps(doc, ensure_ascii=False, indent=2))
+            say(f"{doc['ref']}: {ops.RECIPE_KINDS.get(doc.get('kind'), doc.get('kind'))} на "
+                f"{doc.get('on')}" + (f" ({doc['summary']})" if doc.get("summary") else ""))
+            say(f"  версия {doc.get('version')}"
+                + (f", {ops.RECIPE_STATES.get(doc.get('status'), doc.get('status'))}"
+                   if doc.get("mine") else "") + f"; {ops.recipe_where(doc)}")
+            if doc.get("based_on"):
+                say(f"  основано на {doc['based_on']['ref']}, версия {doc['based_on']['version']}")
+            if (doc.get("made_by") or {}).get("app"):
+                say(f"  сделано сервисом {doc['made_by'].get('title') or doc['made_by']['app']}, "
+                    "с вашего разрешения")
+            if doc.get("models"):
+                say(f"  модели: {', '.join(doc['models'])}")
+            content = doc.get("preset") if doc.get("kind") == "preset" else doc.get("fields")
+            for line in json.dumps(content or {}, ensure_ascii=False, indent=2).splitlines():
+                say("    " + line)
+            if len(doc.get("versions") or []) > 1:
+                say("  версии: " + ", ".join(
+                    f"{v['number']} ({ops.RECIPE_STATES.get(v['status'], v['status'])})"
+                    for v in doc["versions"]))
+            return
+        if action == "copy":
+            made = looma.recipes.copy(full, args.name or "")
+            say(f"{made['ref']}: копия {full}, черновик; модель: `looma recipe model "
+                f"{made['ref']} <имя>`")
+            return
+        if action == "model":
+            if not args.name:
+                raise Stop(f"как назвать модель? looma recipe model {ref} --name <имя>")
+            more = {**({"summary": args.summary} if args.summary else {}),
+                    **({"weights": ops.weight_ref(looma, args.weights)} if args.weights else {}),
+                    **({"repo": args.repo} if args.repo else {})}
+            made = ops.add_entry(looma, {"name": args.name, "recipe": full, **more})
+            for line in _model_lines(made):
+                say(line)
+            say(f"вызвать: gpu: {{ шаг: {{ model: {made['label']} }} }}; для всех: "
+                f"`looma model publish {made['label']}`")
+            return
+        if action == "publish":
+            doc = looma.recipes.publish(full)
+            say(f"{doc['ref']}: " + ("открыт авторам" if doc.get("visibility") == "public"
+                                     else "отправлен на проверку площадки; после неё его увидят "
+                                          "и смогут скопировать другие авторы"))
+            return
+        if action == "unpublish":
+            doc = looma.recipes.unpublish(full)
+            say(f"{doc['ref']}: видите только вы; копии других авторов остаются у них")
+            return
+        if action == "rm":
+            gone = looma.recipes.remove(full)
+            say(f"{gone['ref']} убран" + (f"; модели на нём ({gone['used_by']}) работают дальше"
+                                         if gone.get("used_by") else ""))
+            return
+    except (LoomaError, ops.OpError) as exc:
+        raise Stop(str(exc)) from None
+
+
+def cmd_access(args) -> None:
+    """Доступы сервисов к своему каталогу: список и отзыв."""
+    looma = _looma(args)
+    try:
+        if args.action == "list":
+            rows = looma.access.list()
+            if args.json:
+                return say(json.dumps(rows, ensure_ascii=False, indent=2))
+            for line in ops.access_lines(rows):
+                say(line)
+            return
+        if not args.id or not str(args.id).isdigit():
+            raise Stop("какой доступ отозвать? looma access revoke <номер>, номер из `looma access`")
+        looma.access.revoke(int(args.id))
+        say(f"доступ {args.id} отозван: сервис перестанет действовать в вашем каталоге со "
+            "следующего запроса; записи, которые он завёл, остаются у вас")
+    except LoomaError as exc:
+        raise Stop(str(exc)) from None
+
+
+def cmd_weights(args) -> None:
+    """Записи весов: список, add, show, open, close, rm."""
+    looma = _looma(args)
+    action, ref = args.action, args.ref
+    try:
+        if action == "list":
+            doc = looma.weights.view()
+            if args.json:
+                return say(json.dumps(doc, ensure_ascii=False, indent=2))
+            for line in ops.weight_records_lines(doc):
+                say(line)
+            return
+        if not ref:
+            raise Stop(f"что {'добавить' if action == 'add' else 'взять'}? looma weights {action} "
+                       + ("владелец/репозиторий или владелец/репозиторий/путь/файл.safetensors"
+                          if action == "add" else "автор/веса"))
+        if action == "add":
+            made = looma.weights.add(ref.replace("https://huggingface.co/", ""),
+                                     name=args.name or "", summary=args.summary or "",
+                                     revision=args.revision or "", folder=args.folder or "",
+                                     public=args.open)
+            if args.json:
+                return say(json.dumps(made, ensure_ascii=False, indent=2))
+            verb = (f"версия {made['version']}" if made.get("new_version")
+                    else f"коммит тот же, версия {made['version']}")
+            say(f"{made['ref']}: {ops.weight_content(made)}, {ops.size_text(made.get('bytes'))}, "
+                f"коммит {made['revision'][:8]}, {verb}; "
+                + ("открыта авторам" if made.get("visibility") == "public" else "видите только вы"))
+            if made.get("whole"):
+                say(f"модель: `looma model add <имя> --weights {made['ref']}`")
+            return
+        full = ops.weight_ref(looma, ref)
+        if action == "show":
+            doc = looma.weights.get(full)
+            if args.json:
+                return say(json.dumps(doc, ensure_ascii=False, indent=2))
+            say(f"{doc['ref']}: {ops.weight_content(doc)}"
+                + (f" ({doc['summary']})" if doc.get("summary") else ""))
+            say(f"  {ops.WEIGHT_VISIBILITY.get(doc.get('visibility'), doc.get('visibility'))}"
+                + (f"; закрыта площадкой: {doc['closed']}" if doc.get("closed") else "")
+                + f"; моделей на ней {doc.get('used_by') or 0}"
+                + (f": {', '.join(doc['models'])}" if doc.get("models") else ""))
+            for version in doc.get("versions") or []:
+                say(f"  версия {version['number']}: коммит {version['revision'][:12]}, "
+                    f"{ops.size_text(version.get('bytes'))}"
+                    + ("" if version.get("status") == "approved" else f", {version.get('status')}"))
+            for item in doc.get("files") or []:
+                if not doc.get("whole"):
+                    say(f"  файл {item['path']} {ops.size_text(item.get('size'))}"
+                        + (f", папка {item['folder']}" if item.get("folder") else ""))
+            return
+        if action in ("open", "close"):
+            doc = looma.weights.update(full, {"open": action == "open"})
+            say(f"{doc['ref']}: " + ("открыта, другие авторы могут собрать на ней модель"
+                                     if doc.get("visibility") == "public"
+                                     else "видите только вы; чужие модели на ней работают дальше"))
+            return
+        if action == "rm":
+            gone = looma.weights.remove(full)
+            say(f"{gone['ref']} убрана" + (f"; модели на ней ({gone['used_by']}) работают дальше: "
+                                          "репозиторий и коммит закреплены в них самих"
+                                          if gone.get("used_by") else ""))
+            return
+    except (LoomaError, ops.OpError) as exc:
+        raise Stop(str(exc)) from None
+
+
 def _comfy_weights(looma, args) -> None:
     """Веса редактора: список, add — добавить файл, rm — убрать."""
     what = (args.graph or "").strip()
@@ -599,10 +820,12 @@ def cmd_model(args) -> None:
             else:
                 say(f"сейчас модель поставить некуда: {found.get('error')}")
         elif action == "check":
-            if not args.repo and "/" not in (args.engine or ""):
-                raise Stop("что проверить? looma model check --repo владелец/модель или "
-                           "--from описание.comfy.yaml")
+            if not args.repo and not args.weights and "/" not in (args.engine or ""):
+                raise Stop("что проверить? looma model check --weights автор/веса, --repo "
+                           "владелец/модель или --from описание.comfy.yaml")
             found = looma.entries.check({**({"repo": args.repo} if args.repo else {}),
+                                         **({"weights": ops.weight_ref(looma, args.weights)}
+                                            if args.weights else {}),
                                          **({"engine": args.engine} if args.engine else {}),
                                          **ops.recipe_of(args.set)})
             weights = found.get("weights")
@@ -622,7 +845,9 @@ def cmd_model(args) -> None:
                 recipe=ops.recipe_of(args.set), base=args.base or "", adapter=args.adapter or "",
                 preset=preset, summary=args.summary or "", always=args.always, own=args.own,
                 node=args.node or "",
-                comfy=ops.read_comfy(args.from_) if args.from_ else None)
+                comfy=ops.read_comfy(args.from_) if args.from_ else None,
+                weights=ops.weight_ref(looma, args.weights) if args.weights else "",
+                from_recipe=ops.recipe_ref(looma, args.recipe) if args.recipe else "")
             made = ops.add_entry(looma, payload)
             for line in _model_lines(made):
                 say(line)
@@ -1262,8 +1487,15 @@ def parser() -> argparse.ArgumentParser:
                         "реплики; logs — лог реплик; publish и unpublish — публикация; "
                         "delete — удалить; name — имя автора; adapters — адаптеры LoRA проекта")
     p.add_argument("name", nargs="?", help="имя модели (у name — имя автора)")
-    p.add_argument("--repo", help="add, check: репозиторий весов на HuggingFace")
+    p.add_argument("--repo", help="add, check: репозиторий весов на HuggingFace (запись весов "
+                                  "заведётся сама и закрепит коммит)")
+    p.add_argument("--weights", metavar="автор/веса",
+                   help="add, check: запись весов (`looma weights`): своя или открытая, можно "
+                        "с @версией; вместо --repo")
     p.add_argument("--engine", help="add, check: движок (по умолчанию torch)")
+    p.add_argument("--recipe", metavar="автор/рецепт",
+                   help="add: своя модель из своего рецепта (`looma recipe`): настройка или "
+                        "поля движка из него")
     p.add_argument("--set", action="append", metavar="имя=значение",
                    help="add, check, set: параметр движка, можно несколько раз (stages=2); "
                         "у set пустое значение убирает поле")
@@ -1295,6 +1527,75 @@ def parser() -> argparse.ArgumentParser:
                    help="set: разрешить модели вставать и на узлы сети")
     p.add_argument("--yes", action="store_true", help="delete: подтвердить удаление")
     p.add_argument("--tail", type=int, default=200, help="logs: сколько строк")
+
+    p = command("weights", cmd_weights, "записи весов: репозиторий HuggingFace или файлы, "
+                                        "закреплённые коммитом; из них собираются модели")
+    p.add_argument("action", nargs="?", default="list",
+                   choices=("list", "add", "show", "open", "close", "rm"),
+                   help="list: свои записи, открытые других авторов и свои адаптеры (по "
+                        "умолчанию); add: завести запись или закрепить свою заново; show: "
+                        "подробно, с версиями; open: открыть другим авторам; close: закрыть; "
+                        "rm: убрать (модели на ней работают дальше)")
+    p.add_argument("ref", nargs="?",
+                   help="add: владелец/репозиторий целиком или владелец/репозиторий/путь/"
+                        "файл.safetensors; остальные: автор/веса или имя своей записи")
+    p.add_argument("--name", help="add: имя записи (по умолчанию по имени репозитория)")
+    p.add_argument("--summary", help="add: одна строка о весах")
+    p.add_argument("--revision", metavar="коммит",
+                   help="add: коммит, ветка или метка HuggingFace; без него последний")
+    p.add_argument("--folder", metavar="папка",
+                   help="add с файлом: папка файла в раскладке ComfyUI (checkpoints, loras, vae…)")
+    p.add_argument("--open", action="store_true", help="add: сразу открыть другим авторам")
+    p.add_argument("--json", action="store_true", help="ответ целиком, JSON")
+
+    p = command("run", cmd_run, "разовое вычисление: рецепт в запросе на движке, который "
+                                "это объявил; без движка: свои прогоны")
+    p.add_argument("engine", nargs="?", help="движок автора: автор/движок (runs: true)")
+    p.add_argument("--set", action="append", metavar="поле=значение",
+                   help="поле рецепта (поле движка), можно несколько раз")
+    p.add_argument("--recipe", metavar="автор/рецепт",
+                   help="рецепт полей записью: свой или открытый, вместо --set")
+    p.add_argument("--input", action="append", metavar="имя=значение",
+                   help="вход прогона, можно несколько раз")
+    p.add_argument("--inputs", metavar="файл.json", help="входы прогона JSON-объектом")
+    p.add_argument("--file", action="append", metavar="имя=путь",
+                   help="файл для движка, можно несколько раз: служба получит ссылку на него "
+                        "под этим именем (X-Looma-Files)")
+    p.add_argument("--out", metavar="файл", help="сохранить ответ движка в файл")
+    p.add_argument("--no-wait", action="store_true", help="не ждать, вернуть номер прогона")
+
+    p = command("recipe", cmd_recipe, "рецепты: настройка поверх модели или поля движка "
+                                      "автора, с версиями; модель из рецепта, открытые рецепты")
+    p.add_argument("action", nargs="?", default="list",
+                   choices=("list", "show", "add", "copy", "model", "publish", "unpublish", "rm"),
+                   help="list: свои и открытые рецепты (по умолчанию); show: подробно, с "
+                        "версиями; add: завести рецепт или новую версию своего; copy: копия "
+                        "открытого рецепта у себя; model: своя модель из рецепта; publish: "
+                        "открыть другим авторам (через проверку площадки); unpublish: "
+                        "закрыть; rm: убрать (модели на нём работают дальше)")
+    p.add_argument("ref", nargs="?",
+                   help="add: имя рецепта; остальные: автор/рецепт или имя своего рецепта")
+    p.add_argument("--base", help="add: модель каталога, поверх которой настройка")
+    p.add_argument("--preset", metavar="файл.json",
+                   help="add: настройка: system, template, inputs, params (у изображений и "
+                        "видео prompt)")
+    p.add_argument("--engine", metavar="автор/движок", help="add: движок автора для рецепта полей")
+    p.add_argument("--set", action="append", metavar="поле=значение",
+                   help="add с --engine: поле движка, можно несколько раз")
+    p.add_argument("--summary", help="add, model: одна строка")
+    p.add_argument("--name", help="copy: имя копии; model: имя модели")
+    p.add_argument("--weights", metavar="автор/веса",
+                   help="model из рецепта полей: запись весов, если движок работает с весами")
+    p.add_argument("--repo", help="model из рецепта полей: репозиторий весов")
+    p.add_argument("--json", action="store_true", help="ответ целиком, JSON")
+
+    p = command("access", cmd_access, "доступы сервисов к вашему каталогу: кому вы разрешили "
+                                      "заводить записи, и отзыв")
+    p.add_argument("action", nargs="?", default="list", choices=("list", "revoke"),
+                   help="list: кому разрешено (по умолчанию); revoke: отозвать доступ, действует "
+                        "со следующего запроса сервиса")
+    p.add_argument("id", nargs="?", help="revoke: номер доступа из списка")
+    p.add_argument("--json", action="store_true", help="ответ целиком, JSON")
 
     p = command("comfy", cmd_comfy, "граф ComfyUI: разбор, прогон на площадке, модель")
     p.add_argument("action", choices=("inspect", "sets", "run", "runs", "cancel", "weights",

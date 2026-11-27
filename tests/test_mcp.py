@@ -414,3 +414,80 @@ def test_agent_fills_editor_weights_and_runs_without_listing_them(session, monke
     assert "weights" not in state.run_requests[-1], "веса не названы: их берёт площадка"
     error, gone = s.tool("looma_comfy_weights", action="remove", ref="stabilityai/sdxl/sdxl.safetensors")
     assert not error and gone["removed"] is True
+
+
+def test_agent_makes_a_weights_record_and_a_model_from_it(session):
+    """Агент заводит запись весов, открывает её и собирает модель по записи."""
+    s, state, _tmp = session
+    state.handle = "anna"
+    s.request("initialize", {"protocolVersion": "2025-03-26"})
+    assert "looma_weights" in {t["name"] for t in s.request("tools/list")["result"]["tools"]}
+    error, made = s.tool("looma_weights", action="add", ref="anna/qwen-legal", summary="Юр")
+    assert not error and made["ref"] == "anna/qwen-legal" and made["new_version"]
+    error, listed = s.tool("looma_weights")
+    assert not error and [w["ref"] for w in listed["mine"]] == ["anna/qwen-legal"]
+    error, opened = s.tool("looma_weights", action="open", ref="qwen-legal")
+    assert not error and opened["visibility"] == "public"
+    error, text = s.tool("looma_weights", action="show")
+    assert error and "ref" in text
+    error, _model = s.tool("looma_model_add", name="legal", weights="qwen-legal")
+    assert not error
+    sent = [c for c in state.calls if c[0] == "POST" and c[1] == "/api/services"]
+    assert json.loads(sent[-1][3])["weights"] == "anna/qwen-legal"
+    error, gone = s.tool("looma_weights", action="remove", ref="anna/qwen-legal")
+    assert not error and gone["removed"] is True
+
+
+def test_agent_copies_an_open_recipe_and_makes_a_model(session):
+    """Агент копирует открытый рецепт к автору и собирает из копии модель."""
+    s, state, _tmp = session
+    state.handle = "anna"
+    s.request("initialize", {"protocolVersion": "2025-03-26"})
+    assert "looma_recipe" in {t["name"] for t in s.request("tools/list")["result"]["tools"]}
+    error, listed = s.tool("looma_recipe")
+    assert not error and [r["ref"] for r in listed["open"]] == ["bob/tone"]
+    error, copied = s.tool("looma_recipe", action="copy", ref="bob/tone")
+    assert not error and copied["based_on"]["ref"] == "bob/tone"
+    error, text = s.tool("looma_recipe", action="model", ref="tone")
+    assert error and "name" in text
+    error, _model = s.tool("looma_recipe", action="model", ref="tone", name="tone-bot")
+    assert not error
+    sent = [c for c in state.calls if c[0] == "POST" and c[1] == "/api/services"]
+    assert json.loads(sent[-1][3])["recipe"] == "anna/tone"
+    error, made = s.tool("looma_recipe", action="add", name="loud", base="chat-model",
+                         preset={"system": "Громко"})
+    assert not error and made["ref"] == "anna/loud"
+    error, _model = s.tool("looma_model_add", name="loud-bot", from_recipe="loud")
+    assert not error
+    sent = [c for c in state.calls if c[0] == "POST" and c[1] == "/api/services"]
+    assert json.loads(sent[-1][3])["recipe"] == "anna/loud"
+
+
+def test_agent_runs_a_recipe_once_before_making_a_model(session, monkeypatch):
+    """Агент прогоняет рецепт на движке и получает ответ движка."""
+    s, state, _tmp = session
+    monkeypatch.setattr("loomafloat.client.time.sleep", lambda sec: None)
+    s.request("initialize", {"protocolVersion": "2025-03-26"})
+    assert "looma_run" in {t["name"] for t in s.request("tools/list")["result"]["tools"]}
+    error, done = s.tool("looma_run", engine="bob/echo", recipe={"tone": "loud"},
+                         inputs={"text": "привет"})
+    assert not error and done["status"] == "succeeded" and done["content"] == {"output": "ПРИВЕТ"}
+    assert state.computes["cmp_1"]["body"]["recipe"] == {"tone": "loud"}
+    error, queued = s.tool("looma_run", engine="bob/echo", recipe={}, wait=False)
+    assert not error and queued["id"] == "cmp_2"
+    error, listed = s.tool("looma_run")
+    assert not error and len(listed["runs"]) == 2
+
+
+def test_agent_lists_and_revokes_service_accesses(session):
+    """Агент человека видит доступы сервисов и отзывает по его слову."""
+    s, state, _tmp = session
+    s.request("initialize", {"protocolVersion": "2025-03-26"})
+    tools = {t["name"]: t for t in s.request("tools/list")["result"]["tools"]}
+    assert "только по слову человека" in tools["looma_access"]["description"]
+    error, listed = s.tool("looma_access")
+    assert not error and [c["slug"] for c in listed["data"]] == ["curator"]
+    error, text = s.tool("looma_access", action="revoke")
+    assert error and "id" in text
+    error, gone = s.tool("looma_access", action="revoke", id=7)
+    assert not error and gone == {"revoked": 7}

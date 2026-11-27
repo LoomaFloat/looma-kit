@@ -8,6 +8,9 @@ command: [python, -m, echo_engine.server]
 requirements: requirements.txt
 weights: none
 extensions: true
+# Рецепт в запросе: поля ниже приходят с каждым прогоном (POST /v1/runs),
+# а не только из записи модели. Площадка проверяет их той же схемой.
+runs: true
 requires:
   device: [cuda, mps, cpu]
   ram_gib: 1

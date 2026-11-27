@@ -11,8 +11,9 @@
 
 __version__ = "0.6.0"
 
-from loomafloat.client import Answer, Apps, Job, Looma, Video, client_of  # noqa: E402
+from loomafloat.client import (Answer, Apps, Job, Looma, Video, client_of, consent_url,  # noqa: E402
+                               person_of, rights_of)
 from loomafloat.http import LoomaError  # noqa: E402
 
 __all__ = ["Answer", "Apps", "Job", "Looma", "LoomaError", "Video", "__version__",
-           "client_of"]
+           "client_of", "consent_url", "person_of", "rights_of"]

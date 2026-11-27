@@ -49,10 +49,14 @@ mp4 = looma.video("MiniMax-H3", "A red fox in a snowy forest", quality="fast").c
 | `rerank(model, query, documents, *, top_n=None)` | документы по убыванию оценки: список `{"index", "relevance_score"}`, где `index` указывает в `documents`; `top_n` оставляет столько лучших |
 | `video(model, prompt="", *, seconds=5, wait=False, **params)` | задание на видео; с `wait=True` дождаться готового ролика. Поля как у `POST /v1/videos`: `quality`, `size`, `seed`, `conditions` и другие |
 | `run(model, path="/", *, method="POST", body=None, headers=None, wait=True)` | вызов модели со своим API (движок автора, `автор/модель`): запрос уходит службе как есть, ответ `Answer` (`status`, `headers`, `content`, `text`, `json()`). `body`: байты, строка или объект (уйдёт JSON). С `wait=False` долгое вычисление: ответ `Job` |
-| `job(id)` | задание по номеру (`run_…`): `status`, `progress`, `refresh()`, `wait()`, `content()`, `save(путь)`, `cancel()` |
+| `job(id)` | задание по номеру (`run_…`, `cmp_…`): `status`, `progress`, `refresh()`, `wait()`, `content()`, `save(путь)`, `cancel()` |
+| `compute(engine, *, recipe=None, recipe_ref="", inputs=None, files=None, wait=True)` | разовое вычисление: рецепт в запросе на движке с `runs: true` ([Рецепт в запросе](engines.md#runs)); в `files` имя и номер файла из `upload(путь)`; ответ `Job`, у ждущего готов `content()`. Токеном сервиса: только движки из раздела [compute](../skills/looma-port/references/manifest.md#compute), за счёт автора сервиса, без `files` |
+| `upload(path, purpose="input")` | положить файл в хранилище площадки (`/v1/files`): ответ с номером `id` |
 | `income(period="month")` | доход автора: сервисы, свои модели, доли движков, узлы (ключом автора, не токеном сервиса) |
 | `models()` | модели каталога |
 | `for_client(client)` | копия `Looma` с тем же ключом и адресом; её вызовы моделей записываются на клиента каталога |
+| `for_person(key)` | копия `Looma` с токеном сервиса и ключом человека: её `recipes`, `weights` и `entries` действуют в каталоге человека ([Действия в каталоге человека](#person)) |
+| `access` | доступы сервисов к своему каталогу: `list()`, `revoke(id)` (ключом человека, как `looma access`) |
 | `charge(event, client=None, *, quantity=1, id=None)` | отметить событие из раздела `events` для клиента |
 
 Ответ чата, изображения, векторы и оценки SDK ждёт до 15 минут: спящую модель будит первый вызов.
@@ -117,6 +121,53 @@ channels:
 MCP-сервер сервиса находится по адресу `https://api.loomafloat.ru/mcp/<имя>`, клиенты
 подключаются к нему со своим ключом. Вызов инструмента приходит как POST на его `path` с
 `X-Looma-Client`. Подробно: [Каналы](https://docs.loomafloat.ru/authors/channels/).
+
+## Действия в каталоге человека {#person}
+
+Сервис с правами в разделе [account](../skills/looma-port/references/manifest.md#account)
+заводит записи в каталоге человека, когда тот разрешил. Шлюз кладёт ключ человека в
+каждый его запрос к сервису, сервис зовёт API своим токеном вместе с этим ключом.
+
+```python
+from loomafloat import Looma, consent_url, person_of, rights_of
+
+looma = Looma()
+
+def handle(request):
+    person = person_of(request.headers)          # X-Looma-Account-Key или None
+    if person is None:
+        return redirect(consent_url("/made"))     # страница согласия площадки и обратно
+    made = looma.for_person(person).recipes.add(
+        "contracts", base="Qwen3.8-Flash-Next-NVFP4", preset={"system": "Ты помогаешь юристу…"})
+    if "catalog.publish" in rights_of(request.headers):
+        looma.for_person(person).recipes.publish(made["ref"])
+```
+
+| Функция | Что делает |
+|---|---|
+| `person_of(headers)` | ключ человека из запроса к сервису; живёт десять минут, свежий приходит с каждым запросом. `None`: согласия нет, человек не вошёл или отозвал доступ |
+| `rights_of(headers)` | права, которые человек дал: `["catalog.draft", …]` |
+| `consent_url(next="/")` | адрес согласия на адресе сервиса, `/.looma/consent?next=…`: туда ведут человека, обратно он вернётся на `next` |
+
+Что умеет копия `for_person(key)`, с правом `catalog.draft`:
+
+| Метод | Что делает |
+|---|---|
+| `recipes.view()` | `{"mine": […], "open": […], "handle"}`: рецепты человека (у каждого `ref`, `version`, `status`, `made_by` с `app` и `title`, если запись завёл сервис) и открытые рецепты авторов |
+| `recipes.add(name, *, base="", preset=None, engine="", fields=None, summary="")` | черновик рецепта: настройка поверх модели (`base`, `preset` с `system`, `template`, `inputs`, `params`) или поля движка (`engine`, `fields`). Ответ с `ref` и `version`; то же имя даёт новую версию |
+| `recipes.get(ref)`, `recipes.copy(ref, name="")` | рецепт с версиями; копия открытого рецепта у человека |
+| `recipes.create_model(ref, name)` | модель человека из его рецепта; она спит без вызовов |
+| `weights.add("владелец/репозиторий", summary=…)`, `weights.view()` | запись весов человека; другим авторам она закрыта, открыть её может он сам или сервис с правом `catalog.publish` |
+| `entries.create({"name", "base", "preset"})` | модель человека: те же поля, что у `looma model add`; `min_replicas` больше 0 и цена закрыты |
+| `recipes.publish(ref)`, `entries.publish(id)` | только с правом `catalog.publish`: отправить на проверку площадки |
+
+Записи ложатся с пометкой «сделано сервисом». Ключ только для записей каталога:
+вызовы моделей делайте обычным `looma`, с ключом человека они получат `403`. Отказ
+различают по `LoomaError.kind`: `consent_required` (отозвали, истёк: ведите за согласием
+снова) и `insufficient_rights` (закрыто правами: покажите причину). Ключ живёт десять
+минут: долгую работу делайте до записи, а запись отдельным запросом. Подробно:
+[account](../skills/looma-port/references/manifest.md#account). Образец:
+[`examples/curator`](../examples/curator/).
 
 ## Модель со своим API
 

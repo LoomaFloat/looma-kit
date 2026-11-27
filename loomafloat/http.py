@@ -75,14 +75,35 @@ def _not_sent(exc: Exception) -> bool:
             or "handshake" in str(reason).lower())
 
 
+#: Ключ человека у сервиса: шлюз кладёт его в запрос к сервису, сервис
+#: отдаёт API вместе со своим токеном.
+ACCOUNT_KEY_HEADER = "X-Looma-Account-Key"
+
+
+class Bearer(str):
+    """Токен для `Authorization` и при нём ключ человека (`person`): сервис
+    действует в каталоге человека своим токеном вместе с ключом из запроса."""
+
+    def __new__(cls, token: str, person: str = "") -> "Bearer":
+        made = super().__new__(cls, token)
+        made.person = person
+        return made
+
+
+def _auth(key: str) -> Dict[str, str]:
+    out = {"Authorization": f"Bearer {key}"} if key else {}
+    person = getattr(key, "person", "")
+    if person:
+        out[ACCOUNT_KEY_HEADER] = person
+    return out
+
+
 def request(method: str, url: str, *, key: str = "", body: Optional[bytes] = None,
             headers: Optional[Dict[str, str]] = None, timeout: float = 60.0,
             follow: bool = True) -> Tuple[int, Dict[str, str], bytes]:
     """(код, заголовки, тело). 4xx/5xx — LoomaError; 3xx без `follow` —
     ответ как есть (ссылка на файл — в Location)."""
-    outgoing = {"User-Agent": USER_AGENT, **(headers or {})}
-    if key:
-        outgoing["Authorization"] = f"Bearer {key}"
+    outgoing = {"User-Agent": USER_AGENT, **(headers or {}), **_auth(key)}
     reading = method.upper() in ("GET", "HEAD")
     attempt = 0
     while True:
@@ -112,9 +133,7 @@ def open_stream(method: str, url: str, *, key: str = "", body: Optional[bytes] =
                 headers: Optional[Dict[str, str]] = None, timeout: float = 600.0):
     """Ответ, который читают по мере прихода (SSE чата). Отказ — LoomaError
     до первого байта."""
-    outgoing = {"User-Agent": USER_AGENT, **(headers or {})}
-    if key:
-        outgoing["Authorization"] = f"Bearer {key}"
+    outgoing = {"User-Agent": USER_AGENT, **(headers or {}), **_auth(key)}
     call = urllib.request.Request(url, data=body, method=method.upper(), headers=outgoing)
     try:
         return urllib.request.build_opener().open(call, timeout=timeout)
@@ -138,4 +157,5 @@ def send_json(method: str, url: str, payload=None, *, key: str = "", timeout: fl
     return json.loads(body) if body else None
 
 
-__all__ = ["LoomaError", "get_json", "open_stream", "request", "send_json"]
+__all__ = ["ACCOUNT_KEY_HEADER", "Bearer", "LoomaError", "get_json", "open_stream", "request",
+           "send_json"]

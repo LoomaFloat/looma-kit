@@ -214,3 +214,31 @@ def test_own_api_long_computation(own_api):
     assert _raw(own_api, "DELETE", "/slow/run_long")[0] == 200
     assert own_api.SLOW["run_long"]["cancelled"] is True
     assert _raw(own_api, "DELETE", "/slow/unknown")[0] == 404
+
+
+def test_echo_takes_the_recipe_in_the_request(monkeypatch):
+    """Учебный движок объявляет рецепт в запросе и отвечает на POST /v1/runs."""
+    assert "runs: true" in (ENGINES / "echo" / "looma-engine.yaml").read_text()
+    monkeypatch.syspath_prepend(str(ENGINES / "echo"))
+    monkeypatch.setenv("LOOMA_ENGINE_OPTIONS", "{}")
+    sys.modules.pop("echo_engine.server", None)
+    from echo_engine import server
+
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        url = f"http://127.0.0.1:{httpd.server_port}/v1/runs"
+        body = json.dumps({"recipe": {"tone": "loud", "repeat": 2, "prefix": "> "},
+                           "inputs": {"text": "привет"}}).encode()
+        request = urllib.request.Request(url, data=body, method="POST",
+                                         headers={"Content-Type": "application/json",
+                                                  "X-Looma-Job": "cmp_1"})
+        with urllib.request.urlopen(request, timeout=5) as answer:
+            doc = json.loads(answer.read())
+        assert doc["output"] == "> ПРИВЕТ ПРИВЕТ" and doc["job"] == "cmp_1"
+        bad = urllib.request.Request(url, data=b'{"inputs": {}}', method="POST")
+        with pytest.raises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(bad, timeout=5)
+        assert refused.value.code == 400
+    finally:
+        httpd.shutdown()

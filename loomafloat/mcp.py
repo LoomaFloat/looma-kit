@@ -120,6 +120,8 @@ TOOLS = [
                     "весами: тогда проверяется, есть ли узлы, на которых движок встанет.",
      "inputSchema": {"type": "object", "properties": {
          "repo": {"type": "string", "description": "репозиторий: владелец/модель"},
+         "weights": {"type": "string", "description": "запись весов вместо repo: автор/веса, "
+                                                      "можно с @версией (looma_weights)"},
          "engine": {"type": "string", "description": "движок; по умолчанию torch"},
          "comfy": {"type": "string", "description": "граф ComfyUI как модель: путь к "
                                                     "описанию *.comfy.yaml (graph, output, "
@@ -127,8 +129,10 @@ TOOLS = [
                                                     "looma_comfy_inspect"},
          "recipe": {"type": "object", "description": "параметры движка, если нужны"}}}},
     {"name": "looma_model_add",
-     "description": "Добавить свою модель в каталог. Одно из четырёх: repo (свои веса на движке "
-                    "площадки, свои реплики); base и adapter (модель каталога с адаптером LoRA, "
+     "description": "Добавить свою модель в каталог. Одно из четырёх: weights или repo (свои "
+                    "веса на движке площадки, свои реплики: weights называет запись весов из "
+                    "looma_weights, свою или открытую; repo называет репозиторий, запись весов "
+                    "заведётся сама и закрепит коммит); base и adapter (модель каталога с адаптером LoRA, "
                     "свои реплики); base и preset (настройка поверх модели каталога без своих "
                     "реплик: system, template, inputs, params у текста; prompt, inputs, params "
                     "у изображений и видео); comfy (граф ComfyUI: описание *.comfy.yaml, свои "
@@ -136,7 +140,12 @@ TOOLS = [
                     "автор. handle нужен один раз, если имя автора ещё не задано.",
      "inputSchema": {"type": "object", "properties": {
          "name": {"type": "string", "description": "имя модели: латиница, цифры, точка, дефис"},
-         "repo": {"type": "string"}, "engine": {"type": "string"},
+         "repo": {"type": "string"},
+         "weights": {"type": "string", "description": "запись весов: автор/веса[@версия]"},
+         "from_recipe": {"type": "string", "description": "свой рецепт (looma_recipe): "
+                                                          "автор/рецепт[@версия]; несёт основу "
+                                                          "и настройку или движок и поля"},
+         "engine": {"type": "string"},
          "comfy": {"type": "string", "description": "граф ComfyUI как модель: путь к "
                                                     "описанию *.comfy.yaml (graph, output, "
                                                     "inputs, weights); черновик даёт "
@@ -337,6 +346,84 @@ TOOLS = [
      "inputSchema": {"type": "object", "properties": {
          "id": {"type": "string", "description": "номер прогона run_…"},
          "cancel": {"type": "boolean", "description": "снять прогон id"}}}},
+    {"name": "looma_weights",
+     "description": "Записи весов каталога: репозиторий HuggingFace целиком или отдельные файлы "
+                    "safetensors, закреплённые коммитом (у каждой версии записи свой коммит). Из "
+                    "записи собирается своя модель: looma_model_add с weights. list: свои, "
+                    "открытые записи других авторов и свои адаптеры; add: завести или закрепить "
+                    "свою заново (новая версия, если коммит другой); show: с версиями; open: "
+                    "открыть другим авторам (сразу, без проверки площадки); close: закрыть; "
+                    "remove: убрать (модели на ней работают дальше). Сначала запись видит "
+                    "только автор. Веса проверяются как у своих моделей: открытый репозиторий "
+                    "без соглашения, safetensors, без своего кода модели, до предела размера.",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["list", "add", "show", "open", "close", "remove"],
+                    "description": "list (по умолчанию), add, show, open, close, remove"},
+         "ref": {"type": "string", "description": "add: владелец/репозиторий целиком или "
+                                                  "владелец/репозиторий/путь/файл.safetensors; "
+                                                  "остальные: автор/веса или имя своей записи"},
+         "name": {"type": "string", "description": "add: имя записи; по умолчанию по "
+                                                   "репозиторию"},
+         "summary": {"type": "string", "description": "add: одна строка о весах"},
+         "revision": {"type": "string", "description": "add: коммит, ветка или метка; без "
+                                                       "него последний"},
+         "folder": {"type": "string", "description": "add с файлом: папка файла в раскладке "
+                                                     "ComfyUI"},
+         "open": {"type": "boolean", "description": "add: сразу открыть другим авторам"}}}},
+    {"name": "looma_run",
+     "description": "Разовое вычисление: рецепт прямо в запросе на движке автора, который это "
+                    "объявил (runs: true), на общих исполнителях движка. recipe — поля движка "
+                    "(проверяются той же схемой, что у модели) или recipe_ref — запись рецепта "
+                    "полей; inputs — входы прогона. Ждёт ответ (до 10 минут счёта), wait=false "
+                    "даёт номер cmp_…; без engine — свои прогоны. Время карты и доля автора "
+                    "движка записываются вызывающему. Предлагай, чтобы проверить рецепт до "
+                    "модели или посчитать разово; для постоянных вызовов из сервиса заводи "
+                    "модель (looma_model_add с тем же рецептом).",
+     "inputSchema": {"type": "object", "properties": {
+         "engine": {"type": "string", "description": "движок автора: автор/движок"},
+         "recipe": {"type": "object", "description": "поля движка"},
+         "recipe_ref": {"type": "string", "description": "запись рецепта полей вместо recipe"},
+         "inputs": {"type": "object", "description": "входы прогона"},
+         "files": {"type": "object", "description": "файлы для движка: имя → путь к файлу; "
+                                                    "служба получит ссылки на них"},
+         "wait": {"type": "boolean", "description": "ждать ответ (по умолчанию да)"}}}},
+    {"name": "looma_recipe",
+     "description": "Рецепты: данные для движка с версиями. Вид preset: настройка поверх "
+                    "модели (base и preset: system, template, inputs, params); вид fields: "
+                    "поля движка автора (engine и fields). Настройка поверх модели заводит "
+                    "рецепт сама, каждая правка даёт версию. list: свои и открытые рецепты "
+                    "других авторов; show: с версиями и содержимым; add: завести или новая "
+                    "версия своего; copy: копия открытого рецепта у себя (пометка «основано "
+                    "на»); model: своя модель из своего рецепта (в name имя модели); publish: "
+                    "открыть другим авторам: через проверку площадки, рецепт увидят целиком "
+                    "(только по слову автора); unpublish: закрыть; remove: убрать (модели "
+                    "работают дальше). Чужой рецепт сначала копируют.",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["list", "show", "add", "copy", "model",
+                                               "publish", "unpublish", "remove"],
+                    "description": "list (по умолчанию), show, add, copy, model, publish, "
+                                   "unpublish, remove"},
+         "ref": {"type": "string", "description": "автор/рецепт или имя своего рецепта"},
+         "name": {"type": "string", "description": "add: имя рецепта; copy: имя копии; model: "
+                                                   "имя модели"},
+         "base": {"type": "string", "description": "add: модель каталога под настройку"},
+         "preset": {"type": "object", "description": "add: настройка"},
+         "engine": {"type": "string", "description": "add: движок автора, автор/движок"},
+         "fields": {"type": "object", "description": "add: поля движка"},
+         "summary": {"type": "string", "description": "add, model: одна строка"},
+         "weights": {"type": "string", "description": "model из рецепта полей: запись весов"},
+         "repo": {"type": "string", "description": "model из рецепта полей: репозиторий"}}}},
+    {"name": "looma_access",
+     "description": "Доступы сервисов к каталогу человека: каким сервисам он разрешил "
+                    "заводить черновики весов, рецептов и моделей от его имени (и, с правом "
+                    "catalog.publish, отправлять их на публикацию). list: список с правами и "
+                    "последним использованием; revoke: отозвать доступ по номеру, действует со "
+                    "следующего запроса сервиса (только по слову человека). Разрешает человек "
+                    "сам на странице витрины, отсюда разрешить нельзя.",
+     "inputSchema": {"type": "object", "properties": {
+         "action": {"type": "string", "enum": ["list", "revoke"],
+                    "description": "list (по умолчанию) или revoke"},
+         "id": {"type": "integer", "description": "revoke: номер доступа из списка"}}}},
     {"name": "looma_comfy_weights",
      "description": "Веса редактора ComfyUI: свои файлы автора с HuggingFace и общий список "
                     "площадки (веса открытых моделей ComfyUI). Из них редактор заполняет "
@@ -575,14 +662,17 @@ class Server:
                 "models": [ops.entry_row(e) for e in doc["services"]]}
 
     def looma_model_check(self, repo: str = "", engine: str = "",
-                          recipe: Optional[dict] = None, comfy: str = ""):
+                          recipe: Optional[dict] = None, comfy: str = "", weights: str = ""):
         if comfy:
             found = self.looma.entries.check({**(recipe or {}), **ops.read_comfy(comfy)})
             return {k: found.get(k) for k in ("engine", "model", "weights", "fits", "nodes_fit",
                                               "error", "recipe")}
-        if not repo and "/" not in engine:
-            raise ops.OpError("что проверить? repo: владелец/модель или comfy: описание графа")
+        if not repo and not weights and "/" not in engine:
+            raise ops.OpError("что проверить? weights: автор/веса, repo: владелец/модель или "
+                              "comfy: описание графа")
         found = self.looma.entries.check({**(recipe or {}), **({"repo": repo} if repo else {}),
+                                          **({"weights": ops.weight_ref(self.looma, weights)}
+                                             if weights else {}),
                                           **({"engine": engine} if engine else {})})
         return {k: found.get(k) for k in ("engine", "model", "weights", "fits", "stages",
                                           "nodes_fit", "error")}
@@ -591,11 +681,14 @@ class Server:
                         recipe: Optional[dict] = None, base: str = "", adapter: str = "",
                         preset: Optional[dict] = None, summary: str = "", always: bool = False,
                         handle: str = "", own_nodes: bool = False, node: str = "",
-                        comfy: str = ""):
+                        comfy: str = "", weights: str = "", from_recipe: str = ""):
         payload = ops.entry_payload(name=name, repo=repo, engine=engine, recipe=recipe, base=base,
                                     adapter=adapter, preset=preset, summary=summary,
                                     always=always, own=own_nodes, node=node,
-                                    comfy=ops.read_comfy(comfy) if comfy else None)
+                                    comfy=ops.read_comfy(comfy) if comfy else None,
+                                    weights=ops.weight_ref(self.looma, weights) if weights else "",
+                                    from_recipe=ops.recipe_ref(self.looma, from_recipe)
+                                    if from_recipe else "")
         return self._model(ops.add_entry(self.looma, payload, handle))
 
     def looma_engine_list(self):
@@ -791,6 +884,93 @@ class Server:
         if id:
             return self.looma.comfy.run_status(id)
         return {"runs": self.looma.comfy.runs()}
+
+    def looma_run(self, engine: str = "", recipe: Optional[dict] = None, recipe_ref: str = "",
+                  inputs: Optional[dict] = None, files: Optional[dict] = None,
+                  wait: bool = True):
+        if not engine:
+            return {"runs": self.looma.computes()}
+        attached = ops.upload_files(self.looma, [f"{k}={v}" for k, v in (files or {}).items()])
+        job = self.looma.compute(engine, recipe=recipe,
+                                 recipe_ref=ops.recipe_ref(self.looma, recipe_ref)
+                                 if recipe_ref else "", inputs=inputs, files=attached,
+                                 wait=False)
+        if not wait:
+            return job.doc
+        try:
+            job.wait(poll_s=2.0, timeout_s=900.0)
+        except LoomaError:
+            pass
+        out = dict(job.doc)
+        if (out.get("result") or {}).get("url"):
+            data = job.content()
+            try:
+                out["content"] = json.loads(data)
+            except ValueError:
+                out["content"] = data[:4000].decode("utf-8", "replace")
+        return out
+
+    def looma_recipe(self, action: str = "list", ref: str = "", name: str = "", base: str = "",
+                     preset: Optional[dict] = None, engine: str = "",
+                     fields: Optional[dict] = None, summary: str = "", weights: str = "",
+                     repo: str = ""):
+        if action in ("", "list"):
+            return self.looma.recipes.view()
+        if action == "add":
+            if not (name or ref):
+                raise ops.OpError("add: нужен name")
+            return self.looma.recipes.add(name or ref, base=base, preset=preset, engine=engine,
+                                          fields=fields, summary=summary)
+        if not ref:
+            raise ops.OpError(f"{action}: нужен ref")
+        full = ops.recipe_ref(self.looma, ref)
+        if action == "show":
+            return self.looma.recipes.get(full)
+        if action == "copy":
+            return self.looma.recipes.copy(full, name)
+        if action == "model":
+            if not name:
+                raise ops.OpError("model: нужен name, имя модели")
+            more = {**({"summary": summary} if summary else {}),
+                    **({"weights": ops.weight_ref(self.looma, weights)} if weights else {}),
+                    **({"repo": repo} if repo else {})}
+            return self._model(ops.add_entry(self.looma, {"name": name, "recipe": full, **more}))
+        if action == "publish":
+            return self.looma.recipes.publish(full)
+        if action == "unpublish":
+            return self.looma.recipes.unpublish(full)
+        if action == "remove":
+            return self.looma.recipes.remove(full)
+        raise ops.OpError(f"action {action!r}: бывает list, show, add, copy, model, publish, "
+                          "unpublish, remove")
+
+    def looma_access(self, action: str = "list", id: Optional[int] = None):  # noqa: A002
+        if action in ("", "list"):
+            return {"data": self.looma.access.list()}
+        if action == "revoke":
+            if id is None:
+                raise ops.OpError("revoke: нужен id, номер доступа из списка")
+            return self.looma.access.revoke(int(id))
+        raise ops.OpError(f"action {action!r}: бывает list и revoke")
+
+    def looma_weights(self, action: str = "list", ref: str = "", name: str = "",
+                      summary: str = "", revision: str = "", folder: str = "",
+                      open: bool = False):  # noqa: A002 — имя поля из схемы инструмента
+        if action in ("", "list"):
+            return self.looma.weights.view()
+        if not ref:
+            raise ops.OpError(f"{action}: нужен ref")
+        if action == "add":
+            return self.looma.weights.add(ref, name=name, summary=summary, revision=revision,
+                                          folder=folder, public=open)
+        full = ops.weight_ref(self.looma, ref)
+        if action == "show":
+            return self.looma.weights.get(full)
+        if action in ("open", "close"):
+            return self.looma.weights.update(full, {"open": action == "open"})
+        if action == "remove":
+            return self.looma.weights.remove(full)
+        raise ops.OpError(f"action {action!r}: бывает list, add, show, open, close, remove")
 
     def looma_comfy_weights(self, action: str = "list", ref: str = "", folder: str = "",
                             revision: str = ""):

@@ -18,6 +18,11 @@
 Клиент маркетплейса — заголовок `X-Looma-Client` запроса к сервису
 (`client_of(headers)`). Вызовы для него — `looma.for_client(ref).chat(…)`:
 они записываются на клиента; событие для учёта — `looma.charge("answer", ref)`.
+
+Действовать в каталоге человека (раздел `account` в looma.yaml): с его
+согласия шлюз кладёт в запрос ключ человека (`person_of(headers)`), и
+`looma.for_person(ключ).recipes.add(…)` заводит черновик у него. Ключа нет —
+ведите человека на `consent_url("/куда-вернуться")`.
 """
 
 from __future__ import annotations
@@ -29,11 +34,13 @@ import os
 import struct
 import time
 import urllib.parse
+import uuid
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Iterator, List, Optional, Union
 
 from loomafloat import config
-from loomafloat.http import LoomaError, get_json, open_stream, request, send_json
+from loomafloat.http import (ACCOUNT_KEY_HEADER, Bearer, LoomaError, get_json, open_stream, request,
+                              send_json)
 
 ImageInput = Union[str, Path, bytes]
 #: Сколько ждать изображение или чат: спящую модель будит первый запрос — минуты.
@@ -101,6 +108,43 @@ class Video:
         target = Path(path)
         target.write_bytes(self.content())
         return target
+
+
+#: Адрес согласия на адресе сервиса: его держит шлюз площадки.
+CONSENT_PATH = "/.looma/consent"
+
+
+def _header(headers, name: str) -> Optional[str]:
+    if headers is None:
+        return None
+    for variant in (name, name.lower()):
+        value = headers.get(variant) if hasattr(headers, "get") else None
+        if value:
+            return str(value).strip()
+    if isinstance(headers, dict):
+        found = {k.lower(): v for k, v in headers.items()}.get(name.lower())
+        if found:
+            return str(found).strip()
+    return None
+
+
+def person_of(headers) -> Optional[str]:
+    """Ключ человека из заголовков запроса к сервису (`X-Looma-Account-Key`):
+    шлюз кладёт его, когда человек разрешил сервису действовать в своём
+    каталоге. Живёт десять минут, свежий приходит с каждым запросом. None —
+    согласия нет (или человек не вошёл): ведите его на `consent_url()`."""
+    return _header(headers, ACCOUNT_KEY_HEADER)
+
+
+def rights_of(headers) -> List[str]:
+    """Права, которые человек дал сервису (`X-Looma-Account-Rights`)."""
+    return (_header(headers, "X-Looma-Account-Rights") or "").split()
+
+
+def consent_url(next_path: str = "/") -> str:
+    """Куда отправить человека за согласием: страница площадки, потом обратно
+    на `next_path` этого сервиса. Адрес относительный, на адресе сервиса."""
+    return f"{CONSENT_PATH}?{urllib.parse.urlencode({'next': next_path or '/'})}"
 
 
 def client_of(headers) -> Optional[str]:
@@ -211,10 +255,27 @@ class Looma:
         self.engines = Engines(self)
         self.nodes = Nodes(self)
         self.comfy = Comfy(self)
+        self.weights = Weights(self)
+        self.recipes = Recipes(self)
+        self.access = Access(self)
 
     def for_client(self, client: Optional[str]) -> "Looma":
         """Те же ключ и адрес, вызовы моделей — для клиента `client`."""
-        return Looma(api_url=self.base, key=self.key, client=client)
+        made = Looma(api_url=self.base, key=self.key, client=client)
+        made.key = self.key
+        return made
+
+    def for_person(self, person: Optional[str]) -> "Looma":
+        """Токен сервиса с ключом человека (`person_of(headers)`): `recipes`,
+        `weights` и `entries` действуют в каталоге человека, записи помечены
+        «сделано сервисом». Только черновики и, с правом publish, публикация;
+        модели так не зовут: для вызовов — обычный `looma`."""
+        if not person:
+            raise LoomaError(403, "ключа человека нет: ведите его за согласием "
+                                  f"({CONSENT_PATH}?next=…)")
+        made = Looma(api_url=self.base, key=str(self.key), client=self.client)
+        made.key = Bearer(str(self.key), person)
+        return made
 
     def _headers(self) -> dict:
         return {"X-Looma-Client": self.client} if self.client else {}
@@ -399,8 +460,52 @@ class Looma:
         return Answer(status, head, content)
 
     def job(self, job_id: str) -> Job:
-        """Задание по номеру: `run_…` и другие."""
+        """Задание по номеру: `run_…`, `cmp_…` и другие."""
         return Job(self, {"id": job_id}).refresh()
+
+    def compute(self, engine: str, *, recipe: Optional[dict] = None, recipe_ref: str = "",
+                inputs: Optional[dict] = None, files: Optional[Dict[str, str]] = None,
+                wait: bool = True, poll_s: float = 2.0, timeout_s: float = 3600.0) -> Job:
+        """Разовое вычисление: рецепт прямо в запросе на движке, который это
+        объявил (`runs: true`). Рецепт — поля движка (`recipe`) или своя либо
+        открытая запись рецепта (`recipe_ref`); `inputs` — входы прогона;
+        `files` — имя → номер файла из /v1/files. Считают общие исполнители
+        движка; прогон — задание `cmp_…`: `.wait()`, `.content()`, `.cancel()`.
+        Прошедший рецепт без изменений становится моделью (`looma model add
+        --engine … --set …`)."""
+        body: dict = {"engine": engine, "inputs": inputs or {}}
+        if recipe_ref:
+            body["recipe_ref"] = recipe_ref
+        else:
+            body["recipe"] = recipe or {}
+        if files:
+            body["files"] = files
+        job = Job(self, send_json("POST", self.url("/v1/runs"), body, key=self.key,
+                                  timeout=120))
+        return job.wait(poll_s=poll_s, timeout_s=timeout_s) if wait else job
+
+    def upload(self, path: Union[str, Path], *, purpose: str = "input") -> dict:
+        """Положить файл в хранилище площадки (`/v1/files`): ответ с номером
+        `id`. Его прикладывают к прогону (`compute(files={имя: id})`) и к
+        заданиям; служба получает ссылку на файл."""
+        path = Path(path)
+        data = path.read_bytes()
+        boundary = "looma" + uuid.uuid4().hex
+        media = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"purpose\"\r\n\r\n"
+                f"{purpose}\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
+                f"filename=\"{path.name}\"\r\nContent-Type: {media}\r\n\r\n").encode() \
+            + data + f"\r\n--{boundary}--\r\n".encode()
+        _s, _h, answer = request("POST", self.url("/v1/files"), key=self.key, body=body,
+                                 headers={"Content-Type":
+                                          f"multipart/form-data; boundary={boundary}"},
+                                 timeout=CALL_TIMEOUT_S)
+        return json.loads(answer)
+
+    def computes(self, limit: int = 20) -> List[dict]:
+        """Свои разовые вычисления, свежие первыми."""
+        return (get_json(self.url(f"/v1/runs?limit={int(limit)}"), key=self.key) or {}) \
+            .get("data") or []
 
     def income(self, period: str = "month") -> dict:
         """Доход автора за период (`week`, `month`, `all`): сервисы, свои
@@ -627,6 +732,146 @@ class Entries:
     def adapters(self) -> List[dict]:
         """Адаптеры LoRA проекта: из обучения и загруженные."""
         return get_json(self.looma.url("/v1/adapters"), key=self.looma.key)["data"]
+
+
+class Weights:
+    """Записи весов каталога — то, на чём стоят `looma weights` и MCP
+    `looma_weights`.
+
+    Запись — репозиторий HuggingFace целиком или отдельные файлы, закреплённые
+    коммитом: каждая версия записи держит свой коммит. Из записи собирается
+    своя модель (`looma model add --weights автор/веса`), паспорт модели
+    показывает, чьи в ней веса. Сначала запись видит только автор; открытую
+    другие авторы выбирают для своих моделей."""
+
+    def __init__(self, looma: Looma) -> None:
+        self.looma = looma
+
+    def _url(self, ref: str = "") -> str:
+        tail = f"/{urllib.parse.quote(ref.strip('/'), safe='/')}" if ref else ""
+        return self.looma.url(f"/api/weights{tail}")
+
+    def view(self) -> dict:
+        """`{"mine": […], "open": […], "adapters": […], "limit", "max_gib", "handle"}`:
+        свои записи, открытые записи других авторов, свои адаптеры LoRA."""
+        return get_json(self._url(), key=self.looma.key) or {}
+
+    def choices(self) -> List[dict]:
+        """Записи для своей модели: свои и открытые, репозиторий целиком."""
+        return (get_json(self._url("choices"), key=self.looma.key) or {}).get("weights") or []
+
+    def add(self, source: str = "", *, repo: str = "", files: Optional[list] = None,
+            name: str = "", summary: str = "", revision: str = "", folder: str = "",
+            public: bool = False) -> dict:
+        """Завести запись или закрепить свою заново (новая версия, если коммит
+        другой). `source` — `владелец/репозиторий` целиком или
+        `владелец/репозиторий/путь/файл.safetensors`; `folder` — папка файла в
+        раскладке ComfyUI. Площадка проверит веса по правилам своих моделей и
+        закрепит коммит по HuggingFace."""
+        body: dict = {}
+        if source:
+            body["ref"] = source
+        if repo:
+            body["repo"] = repo
+        if files:
+            body["files"] = files
+        for key, value in (("name", name), ("summary", summary), ("revision", revision),
+                           ("folder", folder)):
+            if value:
+                body[key] = value
+        if public:
+            body["open"] = True
+        return send_json("POST", self._url(), body, key=self.looma.key, timeout=120)
+
+    def get(self, ref: str) -> dict:
+        """Запись с версиями: своя или открытая."""
+        return get_json(self._url(ref), key=self.looma.key)
+
+    def update(self, ref: str, payload: dict) -> dict:
+        """`{"open": true|false}` — открыть другим авторам или закрыть;
+        `{"summary": …}` — описание."""
+        return send_json("PATCH", self._url(ref), payload, key=self.looma.key)
+
+    def remove(self, ref: str) -> dict:
+        """Убрать запись. Модели на ней продолжают работать."""
+        return send_json("DELETE", self._url(ref), key=self.looma.key)
+
+
+class Recipes:
+    """Записи рецептов каталога — то, на чём стоят `looma recipe` и MCP
+    `looma_recipe`.
+
+    Рецепт — данные для движка: настройка поверх модели (`base`, `preset`) или
+    поля движка автора (`engine`, `fields`). У автора он лежит черновиком с
+    версиями. Публикуется моделью (`create_model`, дальше как своя модель) или
+    открытым рецептом (`publish`: после проверки площадки его видят и копируют
+    другие авторы)."""
+
+    def __init__(self, looma: Looma) -> None:
+        self.looma = looma
+
+    def _url(self, ref: str = "", tail: str = "") -> str:
+        path = f"/{urllib.parse.quote(ref.strip('/'), safe='/')}" if ref else ""
+        return self.looma.url(f"/api/recipes{path}{tail}")
+
+    def view(self) -> dict:
+        """`{"mine": […], "open": […], "handle"}`: свои рецепты и открытые других авторов."""
+        return get_json(self._url(), key=self.looma.key) or {}
+
+    def get(self, ref: str) -> dict:
+        return get_json(self._url(ref), key=self.looma.key)
+
+    def add(self, name: str, *, base: str = "", preset: Optional[dict] = None,
+            engine: str = "", fields: Optional[dict] = None, summary: str = "") -> dict:
+        """Завести рецепт или новую версию своего: настройка (`base`, `preset`) или
+        поля движка автора (`engine`, `fields`)."""
+        body: dict = {"name": name}
+        if base:
+            body.update(kind="preset", base=base, preset=preset or {})
+        if engine:
+            body.update(kind="fields", engine=engine, fields=fields or {})
+        if summary:
+            body["summary"] = summary
+        return send_json("POST", self._url(), body, key=self.looma.key)
+
+    def copy(self, ref: str, name: str = "") -> dict:
+        """Копия открытого рецепта у себя, с пометкой «основано на …»."""
+        return send_json("POST", self._url(ref, "/copy"), {"name": name} if name else {},
+                         key=self.looma.key)
+
+    def publish(self, ref: str) -> dict:
+        """Открыть рецепт другим авторам: свежая версия идёт на проверку площадки."""
+        return send_json("POST", self._url(ref, "/publish"), {}, key=self.looma.key)
+
+    def unpublish(self, ref: str) -> dict:
+        return send_json("POST", self._url(ref, "/unpublish"), {}, key=self.looma.key)
+
+    def remove(self, ref: str) -> dict:
+        """Убрать рецепт. Модели на нём работают дальше."""
+        return send_json("DELETE", self._url(ref), key=self.looma.key)
+
+    def create_model(self, ref: str, name: str, **more) -> dict:
+        """Своя модель из своего рецепта: `POST /api/services` с `recipe`."""
+        return send_json("POST", self.looma.url("/api/services"),
+                         {"recipe": ref, "name": name, **more}, key=self.looma.key)
+
+
+class Access:
+    """Доступы сервисов к каталогу человека: кому он разрешил действовать.
+    То, на чём стоят `looma access` и MCP `looma_access`. Разрешают на странице
+    витрины, а смотрят и отзывают и ключом самого человека."""
+
+    def __init__(self, looma: Looma) -> None:
+        self.looma = looma
+
+    def list(self) -> List[dict]:
+        return (get_json(self.looma.url("/api/market/consents"), key=self.looma.key)
+                or {}).get("data") or []
+
+    def revoke(self, consent_id: int) -> dict:
+        """Отозвать: действует на следующем запросе сервиса."""
+        return send_json("DELETE", self.looma.url(f"/api/market/consents/{int(consent_id)}"),
+                         key=self.looma.key)
 
 
 class Comfy:
@@ -856,5 +1101,5 @@ class Nodes:
         return json.loads(body) if body else {}
 
 
-__all__ = ["Answer", "Apps", "Engines", "Entries", "Job", "Looma", "Nodes", "Video",
-           "client_of"]
+__all__ = ["Answer", "Apps", "Engines", "Entries", "Job", "Looma", "Nodes", "Recipes", "Video",
+           "Weights", "client_of"]

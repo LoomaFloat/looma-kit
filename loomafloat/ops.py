@@ -375,12 +375,34 @@ def read_preset(path: Path) -> dict:
 def entry_payload(*, name: str, repo: str = "", engine: str = "", recipe: Optional[dict] = None,
                   base: str = "", adapter: str = "", preset: Optional[dict] = None,
                   summary: str = "", always: bool = False, own: bool = False,
-                  node: str = "", comfy: Optional[dict] = None) -> dict:
-    """Тело запроса на новую запись: одно из четырёх — свои веса (`repo`), модель
-    каталога с адаптером (`base` и `adapter`), настройка (`base` и `preset`),
-    граф ComfyUI (`comfy`: описание и граф из `read_comfy`)."""
+                  node: str = "", comfy: Optional[dict] = None, weights: str = "",
+                  from_recipe: str = "") -> dict:
+    """Тело запроса на новую запись: одно из четырёх — свои веса (`repo` или
+    запись весов `weights`: `автор/веса[@версия]`), модель каталога с адаптером
+    (`base` и `adapter`), настройка (`base` и `preset`), граф ComfyUI (`comfy`:
+    описание и граф из `read_comfy`)."""
     if not name:
         raise EntryError("как назвать модель? Имя: латиница, цифры, точка, дефис")
+    if from_recipe:
+        # Модель из своего рецепта: основа и настройка (или движок и поля) из него.
+        if base or preset is not None or comfy is not None or adapter:
+            raise EntryError("--recipe несёт основу и настройку (или движок и поля): --base, "
+                             "--preset, --adapter и --from с ним не нужны")
+        payload = {"name": name, "recipe": from_recipe, **({"summary": summary} if summary else {}),
+                   **(recipe or {}), **({"repo": repo} if repo else {}),
+                   **({"weights": weights} if weights else {})}
+        if engine:
+            payload["engine"] = engine
+        if always or own or node:
+            payload.update(min_replicas=1 if always else 0, max_replicas=1)
+            if own:
+                payload["contours"] = ["own"]
+            if node:
+                payload["own_node"] = node
+        return payload
+    if weights and (repo or base or comfy is not None):
+        raise EntryError("--weights называет запись весов, а в ней уже есть репозиторий: "
+                         "--repo, --base и --from с ним не нужны")
     if comfy is not None:
         if repo or base or adapter or preset is not None or node or engine not in ("", "comfyui"):
             raise EntryError("модель на ComfyUI задаёт описание графа (--from файл.comfy.yaml): "
@@ -391,12 +413,12 @@ def entry_payload(*, name: str, repo: str = "", engine: str = "", recipe: Option
         return payload
     # Движок автора (`автор/движок`) может работать и без весов.
     authored = "/" in engine and not base
-    chosen = [bool(repo) or authored, bool(base and adapter),
+    chosen = [bool(repo or weights) or authored, bool(base and adapter),
               bool(base and preset is not None)]
     if sum(chosen) != 1 or (base and repo):
-        raise EntryError("что добавить? Одно из четырёх: --repo владелец/модель (свои веса), "
-                         "--base модель --adapter адаптер, --base модель --preset файл.json, "
-                         "--from описание.comfy.yaml (граф ComfyUI)")
+        raise EntryError("что добавить? Одно из четырёх: --weights автор/веса или --repo "
+                         "владелец/модель (свои веса), --base модель --adapter адаптер, --base "
+                         "модель --preset файл.json, --from описание.comfy.yaml (граф ComfyUI)")
     payload = {"name": name}
     if summary:
         payload["summary"] = summary
@@ -415,6 +437,7 @@ def entry_payload(*, name: str, repo: str = "", engine: str = "", recipe: Option
     if base:
         return {**payload, "base": base, "adapter": adapter}
     return {**payload, **(recipe or {}), **({"repo": repo} if repo else {}),
+            **({"weights": weights} if weights else {}),
             **({"engine": engine} if engine else {})}
 
 
@@ -632,6 +655,178 @@ def graph_source(looma, ref: str, write: str = "") -> Tuple[dict, Optional[Path]
     return read_graph(ref), Path(ref)
 
 
+def weight_ref(looma, ref: str) -> str:
+    """Полное имя записи весов: `автор/веса`; без автора — своя (`веса` →
+    `имя-автора/веса`). Версия после `@` сохраняется."""
+    ref = str(ref or "").strip().strip("/")
+    if not ref:
+        raise OpError("какая запись весов? автор/веса или имя своей записи")
+    if "/" in ref.partition("@")[0]:
+        return ref
+    handle = (looma.weights.view() or {}).get("handle") or ""
+    if not handle:
+        raise OpError(f"{ref}: назовите запись полностью, автор/веса (имя автора не задано)")
+    return f"{handle}/{ref}"
+
+
+WEIGHT_VISIBILITY = {"private": "видите только вы", "public": "открыта авторам"}
+RECIPE_KINDS = {"preset": "настройка поверх модели", "fields": "поля движка автора"}
+RECIPE_STATES = {"draft": "черновик", "pending": "на проверке", "approved": "проверен",
+                 "rejected": "отклонён"}
+
+
+def recipe_ref(looma, ref: str) -> str:
+    """Полное имя рецепта: `автор/рецепт`; без автора — свой."""
+    ref = str(ref or "").strip().strip("/")
+    if not ref:
+        raise OpError("какой рецепт? автор/рецепт или имя своего рецепта")
+    if "/" in ref.partition("@")[0]:
+        return ref
+    handle = (looma.recipes.view() or {}).get("handle") or ""
+    if not handle:
+        raise OpError(f"{ref}: назовите рецепт полностью, автор/рецепт (имя автора не задано)")
+    return f"{handle}/{ref}"
+
+
+def inputs_of(pairs, path: str = "") -> dict:
+    """Входы прогона: из файла JSON и парами `имя=значение` (пары сильнее)."""
+    inputs: dict = {}
+    if path:
+        try:
+            inputs = json.loads(Path(path).read_text(encoding="utf-8"))
+        except OSError as exc:
+            raise OpError(f"{path} не прочитать: {exc.strerror or exc}") from None
+        except ValueError:
+            raise OpError(f"{path}: нужен JSON-объект с входами") from None
+        if not isinstance(inputs, dict):
+            raise OpError(f"{path}: нужен JSON-объект с входами")
+    for pair in pairs or []:
+        key, sep, value = str(pair).partition("=")
+        if not sep or not key.strip():
+            raise OpError(f"{pair!r}: вход задаётся как имя=значение")
+        inputs[key.strip()] = value
+    return inputs
+
+
+def upload_files(looma, pairs) -> dict:
+    """`имя=путь` → файлы в хранилище площадки: имя для движка → номер файла."""
+    out = {}
+    for pair in pairs or []:
+        name, sep, path = str(pair).partition("=")
+        if not sep or not name.strip() or not path.strip():
+            raise OpError(f"{pair!r}: файл задаётся как имя=путь")
+        if not Path(path).is_file():
+            raise OpError(f"{path}: файла нет")
+        out[name.strip()] = looma.upload(path)["id"]
+    return out
+
+
+def recipe_where(item: dict) -> str:
+    """Где рецепт: открыт ли другим авторам и что с проверкой."""
+    if item.get("visibility") == "public":
+        return "открыт авторам"
+    if item.get("status") == "pending":
+        return "на проверке"
+    if item.get("status") == "rejected":
+        return f"не открыт: {item.get('note')}"
+    return "видите только вы"
+
+
+def made_text(item: dict) -> str:
+    """Пометка записи, которую завёл сервис ключом человека."""
+    made = item.get("made_by") or {}
+    return f", сделано сервисом {made.get('title') or made.get('app')}" if made.get("app") else ""
+
+
+#: Права сервиса в каталоге человека коротко (`looma access`).
+RIGHTS_SHORT = {"catalog.draft": "черновики в каталоге", "catalog.publish": "публикация записей"}
+
+
+def access_lines(rows: list) -> list:
+    """Доступы сервисов к своему каталогу строками (`looma access`)."""
+    if not rows:
+        return ["сервисы не действуют в вашем каталоге: разрешение даётся на странице витрины, "
+                "когда сервис его попросит"]
+    lines = []
+    for row in rows:
+        rights = ", ".join(RIGHTS_SHORT.get(r.get("name"), r.get("title", ""))
+                           for r in row.get("rights") or [])
+        used = (time.strftime("%d.%m.%Y %H:%M", time.localtime(row["last_used_at"]))
+                if row.get("last_used_at") else "ещё не было")
+        lines.append(f"  {row['id']}  {row.get('title') or row.get('app')} ({row.get('slug')}): "
+                     f"{rights}; разрешено {time.strftime('%d.%m.%Y', time.localtime(row['granted_at']))}"
+                     f", последний раз {used}")
+    lines.append("отозвать: `looma access revoke <номер>`; действует со следующего запроса")
+    return lines
+
+
+def recipe_lines(doc: dict) -> list:
+    """Рецепты строками (`looma recipe`)."""
+    mine, opened = doc.get("mine") or [], doc.get("open") or []
+    lines = [f"свои рецепты: {len(mine)}"]
+    if not mine:
+        lines.append("  пока нет: рецепт заводится сам вместе с настройкой поверх модели, или "
+                     "`looma recipe add <имя> --base <модель> --preset файл.json`")
+    for item in mine:
+        based = f", основано на {item['based_on']['ref']}" if item.get("based_on") else ""
+        models = ", ".join(item.get("models") or []) or "моделей нет"
+        lines.append(f"  {item['ref']}  {RECIPE_KINDS.get(item.get('kind'), item.get('kind'))} "
+                     f"на {item.get('on')}  версия {item.get('version')}  {recipe_where(item)}"
+                     f"{based}{made_text(item)}  {models}")
+    lines.append("открытые рецепты авторов: " + (str(len(opened)) if opened else "пока нет"))
+    for item in opened:
+        lines.append(f"  {item['ref']}  {RECIPE_KINDS.get(item.get('kind'), item.get('kind'))} "
+                     f"на {item.get('on')}  моделей {item.get('used_by') or 0}"
+                     + (f"  {item['summary']}" if item.get("summary") else ""))
+    if opened:
+        lines.append("чужой рецепт: `looma recipe copy автор/рецепт`, потом `looma recipe model "
+                     "<рецепт> <имя модели>`")
+    return lines
+
+
+def weight_content(item: dict) -> str:
+    """Что лежит в записи: репозиторий целиком или файлы."""
+    if item.get("whole"):
+        return item.get("repo") or ""
+    files = item.get("files") or []
+    if len(files) == 1:
+        folder = files[0].get("folder")
+        return f"{item.get('repo')}/{files[0].get('path')}" + (f" (папка {folder})" if folder else "")
+    return f"{item.get('repo')}, файлов {len(files)}"
+
+
+def weight_records_lines(doc: dict) -> list:
+    """Записи весов строками (`looma weights`)."""
+    mine, opened = doc.get("mine") or [], doc.get("open") or []
+    adapters = doc.get("adapters") or []
+    lines = [f"свои веса: {len(mine)} из {doc.get('limit') or 100}"]
+    if not mine:
+        lines.append("  пока нет: `looma weights add владелец/репозиторий`, или заведите модель "
+                     "с --repo: запись появится сама")
+    for item in mine:
+        state = (f"закрыта площадкой ({item['closed']})" if item.get("closed")
+                 else WEIGHT_VISIBILITY.get(item.get("visibility"), item.get("visibility")))
+        models = item.get("models") or []
+        others = int(item.get("used_by") or 0) - len(models)
+        used = ", ".join(models) + (f" и ещё {others}" if models and others > 0 else "") \
+            if models else (f"моделей других авторов: {others}" if others > 0 else "моделей нет")
+        lines.append(f"  {item['ref']}  {weight_content(item)}  {size_text(item.get('bytes'))}  "
+                     f"коммит {str(item.get('revision') or '')[:8]} (версия {item.get('version')})"
+                     f"  {state}  {used}")
+    lines.append("открытые веса авторов: " + (str(len(opened)) if opened else "пока нет"))
+    for item in opened:
+        lines.append(f"  {item['ref']}  {weight_content(item)}  {size_text(item.get('bytes'))}"
+                     f"  моделей {item.get('used_by') or 0}")
+    if adapters:
+        lines.append(f"адаптеры: {len(adapters)}")
+        for item in adapters:
+            lines.append(f"  {item['name']}  обучен на {item.get('base_model')}  "
+                         f"{size_text(item.get('bytes'))}")
+    if mine or opened:
+        lines.append("модель из записи: `looma model add <имя> --weights автор/веса`")
+    return lines
+
+
 def size_text(size) -> str:
     size = int(size or 0)
     return f"{size / 2 ** 30:.1f} ГиБ" if size >= 2 ** 30 else f"{max(1, size // 2 ** 20)} МБ"
@@ -653,8 +848,8 @@ def weights_lines(doc: dict) -> list:
         lines.append(f"  {item['folder']}  {item['name']}  {size_text(item.get('size'))}"
                      f"  ({', '.join(item.get('models') or [])})")
     if mine or shared:
-        lines.append("в графе файл называют так, как в списке (владелец/репозиторий/файл), или "
-                     "только именем файла, если оно одно; прогон без --weights берёт их отсюда")
+        lines.append("в графе файл называют так, как в списке: именем файла, а при одинаковых "
+                     "именах владелец/репозиторий/файл; прогон без --weights берёт их отсюда")
     return lines
 
 
@@ -854,6 +1049,9 @@ def job_lines(doc: dict) -> list:
         line += f", {doc['progress']}%"
     out = [line]
     detail = doc.get("detail") or {}
+    if detail.get("engine"):
+        out.append(f"  прогон на движке {detail['engine']}, версия {detail.get('engine_version')}"
+                   + (f", рецепт {detail['recipe_ref']}" if detail.get("recipe_ref") else ""))
     if detail.get("model"):
         out.append(f"  {detail.get('model')} {detail.get('method') or ''} "
                    f"{detail.get('path') or ''}".rstrip())

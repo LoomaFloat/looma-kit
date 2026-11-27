@@ -14,8 +14,9 @@
   причину в лог и завершается, а не висит с закрытым здоровьем;
 - `POST /v1/chat/completions` в формате OpenAI, целиком и потоком; в ответе
   `usage`, в потоке он едет последним событием перед `[DONE]`;
-- репозиторий весов приходит в `LOOMA_MODEL`, имя модели в `LOOMA_MODEL_ID`,
-  поля рецепта одним JSON в `LOOMA_ENGINE_OPTIONS`.
+- репозиторий весов приходит в `LOOMA_MODEL`, коммит, закреплённый записью весов
+  модели, в `LOOMA_MODEL_REVISION` (качать нужно его), имя модели в
+  `LOOMA_MODEL_ID`, поля рецепта одним JSON в `LOOMA_ENGINE_OPTIONS`.
 
 Куда качать веса, движок не решает: `HF_HOME` уже указывает на кэш, который
 переживает перезапуск (общий кэш узла у процесса, свой каталог `/cache` у
@@ -38,6 +39,8 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 MODEL_ID = os.environ.get("LOOMA_MODEL_ID", "llm")
 REPO = os.environ.get("LOOMA_MODEL", "")
+#: Коммит весов, закреплённый записью весов модели: все реплики берут его.
+REVISION = os.environ.get("LOOMA_MODEL_REVISION", "").strip() or None
 OPTIONS = json.loads(os.environ.get("LOOMA_ENGINE_OPTIONS") or "{}")
 #: Предел длины ответа: запрос может просить меньше, но не больше.
 MAX_TOKENS = max(1, min(8192, int(OPTIONS.get("max_tokens") or 512)))
@@ -78,8 +81,8 @@ def load() -> None:
     precision = {"dtype": dtype} if recent else {"torch_dtype": dtype}
     for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
         try:
-            tokenizer = AutoTokenizer.from_pretrained(REPO)
-            model = AutoModelForCausalLM.from_pretrained(REPO, **precision)
+            tokenizer = AutoTokenizer.from_pretrained(REPO, revision=REVISION)
+            model = AutoModelForCausalLM.from_pretrained(REPO, revision=REVISION, **precision)
             break
         except OSError as exc:              # сеть или диск: стоит попробовать ещё
             if attempt == DOWNLOAD_ATTEMPTS:

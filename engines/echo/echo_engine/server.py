@@ -10,7 +10,11 @@
   учёт вызовов. В потоке `usage` едет в последнем событии перед `[DONE]`;
 - имя модели приходит в `LOOMA_MODEL_ID`, веса (если запись их называет) в
   `LOOMA_MODEL`, поля рецепта одним JSON в `LOOMA_ENGINE_OPTIONS`, пакеты
-  расширений списком в `LOOMA_EXTENSIONS`.
+  расширений списком в `LOOMA_EXTENSIONS`;
+- рецепт в запросе (`runs: true` в манифесте): `POST /v1/runs` с JSON
+  `{"recipe": поля, "inputs": входы}`. Поля уже проверены площадкой по схеме
+  `fields`. Ответ любой: он и есть результат прогона. Долгое вычисление
+  отвечает 202 с адресом в `Location` и потом готовым ответом по нему.
 
     LOOMA_SERVE_PORT=8000 python -m echo_engine.server
 """
@@ -45,15 +49,20 @@ def tokens(text: str) -> int:
     return len(text.split())
 
 
-def answer_to(messages: list) -> str:
-    said = next((m.get("content") for m in reversed(messages or [])
-                 if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
-    text = " ".join([said] * int(OPTIONS.get("repeat") or 1))
-    if OPTIONS.get("tone") == "loud":
+def echo(said: str, options: dict) -> str:
+    """Ответ по полям рецепта: из записи модели или из прогона."""
+    text = " ".join([said] * int(options.get("repeat") or 1))
+    if options.get("tone") == "loud":
         text = text.upper()
     for transform in EXTENSIONS:
         text = transform(text)
-    return str(OPTIONS.get("prefix") or "") + text
+    return str(options.get("prefix") or "") + text
+
+
+def answer_to(messages: list) -> str:
+    said = next((m.get("content") for m in reversed(messages or [])
+                 if m.get("role") == "user" and isinstance(m.get("content"), str)), "")
+    return echo(said, OPTIONS)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -82,6 +91,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {"error": {"message": "нет такого адреса"}})
 
     def do_POST(self) -> None:                    # noqa: N802
+        if self.path == "/v1/runs":
+            self.run()
+            return
         if self.path != "/v1/chat/completions":
             self._json(404, {"error": {"message": "нет такого адреса"}})
             return
@@ -119,6 +131,22 @@ class Handler(BaseHTTPRequestHandler):
         self._chunk(f"data: {json.dumps(last, ensure_ascii=False)}\n\n")
         self._chunk("data: [DONE]\n\n")
         self._chunk("")
+
+
+    def run(self) -> None:
+        """Прогон: рецепт и входы пришли в запросе, ответ сразу."""
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+            recipe, inputs = dict(body.get("recipe") or {}), dict(body.get("inputs") or {})
+        except (ValueError, TypeError, AttributeError):
+            self._json(400, {"error": {"message": "нужен JSON с полями recipe и inputs"}})
+            return
+        said = inputs.get("text")
+        if not isinstance(said, str):
+            self._json(400, {"error": {"message": "нужен вход text: строка"}})
+            return
+        self._json(200, {"output": echo(said, recipe), "recipe": recipe,
+                         "job": self.headers.get("X-Looma-Job", "")})
 
 
 def main() -> None:

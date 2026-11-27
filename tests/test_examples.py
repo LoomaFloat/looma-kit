@@ -26,6 +26,7 @@ CASES = {
                      "<title>Студия изображений · Looma Float</title>"),
     "video-studio": ("looma-video", "studio.py", "<title>Видеостудия · Looma Float</title>"),
     "storyboard": ("storyboard", "app.py", "<title>Раскадровка</title>"),
+    "curator": ("looma-curator", "app.py", "<title>Куратор рецептов · Looma Float</title>"),
 }
 #: Чего не должно быть в открытом репозитории.
 INTERNAL = ("/Users/", "LoomaFloat/client", "devkit", "admin", "от Looma")
@@ -56,7 +57,9 @@ def test_every_example_is_a_valid_project(tmp_path, example):
     root = _clean_copy(example, tmp_path)
     manifest = (root / "looma.yaml").read_text(encoding="utf-8")
     assert manifest_name(root) == name
-    assert "gpu:" in manifest and "listing:" in manifest and "icon: icon.png" in manifest
+    # Модели зовут все, кроме куратора: он действует в каталоге человека (account).
+    assert ("gpu:" in manifest or "account:" in manifest)
+    assert "listing:" in manifest and "icon: icon.png" in manifest
     assert not re.search(r"\bprice\s*:", manifest)            # цены задаёт автор
     assert (root / "README.md").is_file() and (root / script).is_file()
     # Код импортирует SDK, а копии нет: `looma deploy` положит её сам.
@@ -103,3 +106,30 @@ def test_every_example_starts_and_serves_its_page(tmp_path, api, example):  # no
             assert set(config["models"].values()) == _models(manifest)
     finally:
         proc.kill()
+
+
+def test_curator_asks_for_consent_and_files_a_draft_with_the_person_key(tmp_path, api):  # noqa: F811
+    """Учебный сервис входа с правами: без ключа человека ведёт за согласием, с
+    ключом заводит черновик рецепта токеном сервиса вместе с ключом."""
+    base, state = api
+    state.handle = "anna"
+    root = _clean_copy("curator", tmp_path)
+    ops.vendor(root)
+    proc, url = _start(root, "app.py", base, {"LOOMA_APP_ID": "app-curator"})
+    try:
+        page = urllib.request.urlopen(url + "/", timeout=5).read().decode()
+        assert "/.looma/consent?next=%2F" in page and "Разрешить доступ" in page
+        person = {"X-Looma-Account-Key": "lak_test"}
+        form = urllib.request.urlopen(urllib.request.Request(url + "/", headers=person),
+                                      timeout=5).read().decode()
+        assert 'action="save"' in form
+        saved = urllib.request.urlopen(urllib.request.Request(
+            url + "/save", data=b"name=contracts&system=%D0%AE%D1%80%D0%B8%D1%81%D1%82",
+            headers={**person, "Content-Type": "application/x-www-form-urlencoded"}),
+            timeout=5).read().decode()
+        assert "anna/contracts" in saved and "заведён" in saved
+    finally:
+        proc.kill()
+    assert ("POST", "/api/recipes", "lak_test") in state.persons
+    sent = [json.loads(c[3]) for c in state.calls if c[:2] == ("POST", "/api/recipes")]
+    assert sent[-1]["base"] and sent[-1]["preset"] == {"system": "Юрист"}

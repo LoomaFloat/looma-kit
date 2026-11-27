@@ -17,9 +17,9 @@
 | skill **`looma-apps`** | работа с сервисом на Looma Float: деплой, логи, откат, секреты, модели, статистика, публикация |
 | skill **`looma-engine`** | свой код на видеокарте: движок, проверка на своём узле без ревью, модель на нём, ревью для сети |
 | CLI **`looma`** | все действия из терминала; на нём работают все skills. Справка: [docs/cli.md](docs/cli.md) |
-| MCP-сервер **`looma mcp`** | те же действия в виде 42 инструментов для агента. Справка: [docs/mcp.md](docs/mcp.md) |
+| MCP-сервер **`looma mcp`** | те же действия в виде 51 инструмента для агента. Справка: [docs/mcp.md](docs/mcp.md) |
 | SDK **`loomafloat`** | вызовы моделей Looma Float из кода на Python, без зависимостей. Справка: [docs/sdk.md](docs/sdk.md) |
-| примеры **`examples/`** | код четырёх сервисов из каталога: ассистент, студия изображений, видеостудия, раскадровка. Список: [examples/README.md](examples/README.md) |
+| примеры **`examples/`** | код пяти сервисов из каталога: ассистент, студия изображений, видеостудия, раскадровка и учебный куратор рецептов (вход через Looma с правами). Список: [examples/README.md](examples/README.md) |
 
 Skills сделаны в открытом формате [Agent Skills](https://agentskills.io): их читают
 Claude Code, Cursor, OpenAI Codex, GitHub Copilot, Gemini CLI и другие агенты.
